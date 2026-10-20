@@ -16,7 +16,7 @@ Extracted from a real migration project, where it ran waves of 3–4 Builders th
 Needs Node 20+, git 2.38+, bash and the GitHub CLI (`gh auth login`).
 
 ```sh
-npm install --save-dev github:smknaqvi/foreman    # the package is @smknaqvi/foreman; the command is foreman
+npm install --save-dev github:smknaqvi/foreman#v0.1.2    # pin a release tag; the package is @smknaqvi/foreman, the command foreman
 npx --no-install foreman init          # config, git hook, Claude Code guard, the two playbooks (--ci, --conductor for more)
 npx --no-install foreman doctor        # checks it all works
 ```
@@ -108,7 +108,16 @@ export default {
 - **The command guard is Claude Code only.** Other agents get the git pre-push check and the commands, but nothing stops them typing `gh pr merge`.
 - **GitHub only.**
 
+## Upgrading
+
+1. Bump the tag in `package.json` (`npm install --save-dev github:smknaqvi/foreman#vX.Y.Z`) and read [CHANGELOG.md](CHANGELOG.md).
+2. If the changelog says so, run `npx --no-install foreman init --force` to refresh the hook and the playbooks. Playbooks you wrote yourself are never replaced.
+3. Run `npx --no-install foreman doctor`, then open the PR. `package.json` is always a risky path, so the upgrade gets the stricter review.
+4. After it merges, every checkout needs `npm install`. Until then the hook refuses `gh` and `git push`, saying which version it expected. Tell running Builders when you ask them to rebase.
+
 ## Development
+
+foreman runs on itself. `main` is protected: pull requests only, and all four test jobs must be green. PRs merge through `node bin/foreman.mjs approve` and `merge` (see `foreman.config.json`). Then a release is tagged on `main` and added to the changelog.
 
 ```sh
 npm test    # the guard's command cases, the merge gate against real git repos and a fake gh, init, config, adapters
