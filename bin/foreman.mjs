@@ -28,6 +28,9 @@ Setup
   guard                                   the Claude Code hook itself (reads the hook payload on stdin)
 `;
 
+// Output piped into something that stops reading early (`foreman status | head`): just stop.
+process.stdout.on('error', (e) => { if (e.code === 'EPIPE') process.exit(0); throw e; });
+
 const [command, ...rest] = process.argv.slice(2);
 const script = (name) => fileURLToPath(new URL(`../scripts/${name}.sh`, import.meta.url));
 const runScript = (name, args) => {
