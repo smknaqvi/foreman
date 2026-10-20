@@ -1,0 +1,8 @@
+{
+	"baseBranch": "main",
+	"requiredCheck": "test (ubuntu-24.04, 22)",
+	"verifyCommand": "npm test",
+	"hotspots": ["lib/guard.mjs", "scripts/merge.sh", "lib/config.mjs"],
+	"riskyPaths": ["scripts/", "lib/guard.mjs", "templates/"],
+	"env": { "adapter": "none" }
+}
