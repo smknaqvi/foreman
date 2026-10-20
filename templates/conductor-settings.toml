@@ -1,0 +1,7 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+# Installs dependencies, switches on git's pre-push check and gives the workspace its own port.
+setup = "npm install --no-fund --no-audit && npx --no-install foreman workspace"
+# Each workspace has its own environment and port, so several can run at once.
+run_mode = "concurrent"

@@ -1,0 +1,10 @@
+{
+	"baseBranch": "main",
+	"requiredCheck": "test",
+	"verifyCommand": "npm run lint && npm test",
+	"riskyPaths": ["migrations/", "src/auth/", "infra/"],
+	"hotspots": ["src/routes.ts", "prisma/schema.prisma"],
+	"playbooks": ["docs/agents/frontend.md"],
+	"maxBuilders": 3,
+	"env": { "adapter": "docker-compose", "service": "web", "containerPort": 3000, "envFile": ".env", "portVariable": "WEB_PORT" }
+}

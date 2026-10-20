@@ -1,0 +1,12 @@
+{
+	"baseBranch": "__BASE__",
+	"requiredCheck": "verify",
+	"verifyCommand": "npm test",
+	"planFile": "",
+	"hotspots": [],
+	"riskyPaths": [],
+	"staleCheckPaths": [],
+	"playbooks": [],
+	"maxBuilders": 4,
+	"env": { "adapter": "none" }
+}

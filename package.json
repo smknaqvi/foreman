@@ -1,0 +1,38 @@
+{
+	"name": "@smknaqvi/foreman",
+	"version": "0.1.0",
+	"description": "Run a crew of coding agents on one GitHub repo: a Coordinator reviews and approves, Builders work one issue each, and nothing reaches main except through a gated merge.",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/smknaqvi/foreman.git"
+	},
+	"type": "module",
+	"bin": {
+		"foreman": "bin/foreman.mjs"
+	},
+	"exports": {
+		".": "./lib/index.mjs",
+		"./guard": "./lib/guard.mjs",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"bin",
+		"lib",
+		"scripts",
+		"templates"
+	],
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"test": "node --test test/*.test.mjs"
+	},
+	"keywords": [
+		"claude-code",
+		"agents",
+		"multi-agent",
+		"github",
+		"merge-queue"
+	]
+}

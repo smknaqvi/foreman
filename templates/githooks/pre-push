@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# foreman: git refuses pushes to __BASE__ from this machine. Changes reach __BASE__ only through a PR that
+# `foreman merge` merges on GitHub. This sees the real target branch, however the push was typed; the
+# Claude Code hook (.claude/hooks/foreman-guard.mjs) covers merges and GitHub API calls.
+# Installed by `foreman init`, switched on by `foreman workspace` (git config core.hooksPath .githooks).
+# A person who really means to push to __BASE__: FOREMAN_ALLOW_BASE_PUSH=1 git push ...
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+	if [ "$remote_ref" = "refs/heads/__BASE__" ] && [ "${FOREMAN_ALLOW_BASE_PUSH:-}" != 1 ]; then
+		echo "pre-push: not pushing to __BASE__. Push your branch and open a PR; it merges through foreman merge." >&2
+		exit 1
+	fi
+done
+exit 0

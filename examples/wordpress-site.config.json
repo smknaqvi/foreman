@@ -1,0 +1,12 @@
+{
+	"baseBranch": "main",
+	"requiredCheck": "verify",
+	"verifyCommand": "npm run verify",
+	"planFile": "MIGRATION_PLAN.md",
+	"staleCheckPaths": ["tools/visual/"],
+	"riskyPaths": ["deploy/", "setup/setup.php", ".wp-env.json", "plugins/my-site/includes/admin/"],
+	"hotspots": ["themes/my-theme/theme.json", "setup/setup.php", "plugins/my-site/includes/", ".wp-env.json"],
+	"playbooks": [".claude/skills/match-live-page/SKILL.md", ".claude/skills/verify-changes/SKILL.md", ".claude/skills/local-site/SKILL.md"],
+	"maxBuilders": 4,
+	"env": { "adapter": "wp-env" }
+}
