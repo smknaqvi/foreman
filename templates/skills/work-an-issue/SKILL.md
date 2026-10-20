@@ -3,7 +3,7 @@ name: work-an-issue
 description: Take a GitHub issue from start to pull request while other agents work in parallel: read the issue, scope the change, branch, build, verify, collect plan updates, open a PR that closes the issue, and merge it through foreman once the Coordinator approves. Use when asked to "work on #N", "pick up the next issue", or to finish a task as a PR.
 ---
 
-<!-- Managed by foreman (npx foreman init --force replaces it). Put project-specific guidance in AGENTS.md or a playbook listed in foreman.config.json. -->
+<!-- Managed by foreman (npx --no-install foreman init --force replaces it). Put project-specific guidance in AGENTS.md or a playbook listed in foreman.config.json. -->
 
 # Work an issue
 
@@ -46,6 +46,6 @@ The Coordinator approves the PR's **current commit** (`foreman approve`). That a
 approved=<sha from the Coordinator's "Approved at <sha>" message>   # not HEAD: it changes when you rebase
 git fetch origin && git rebase origin/<base>      # needed if other PRs merged meanwhile
 git push --force-with-lease                       # no need to wait for checks on a clean rebase
-npx foreman merge <PR> --rebased-from "$approved"  # same command on every retry
+npx --no-install foreman merge <PR> --rebased-from "$approved"  # same command on every retry
 ```
 `foreman merge` merges only if the change is identical to what was approved (a pure rebase), the PR is up to date, and the required check passed. If the rebase needed conflict fixes, the change differs: report back for re-review. If it refuses for another reason, do what it says and retry. Never merge any other way, and never merge someone else's PR (a hook blocks `gh pr merge` and pushes to the base anyway; if it stops you, you're on the wrong path). Afterwards stop your environment and report the merge.

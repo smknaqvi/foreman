@@ -17,11 +17,13 @@ Needs Node 20+, git 2.38+, bash and the GitHub CLI (`gh auth login`).
 
 ```sh
 npm install --save-dev github:smknaqvi/foreman    # the package is @smknaqvi/foreman; the command is foreman
-npx foreman init          # config, git hook, Claude Code guard, the two playbooks (--ci, --conductor for more)
-npx foreman doctor        # checks it all works
+npx --no-install foreman init          # config, git hook, Claude Code guard, the two playbooks (--ci, --conductor for more)
+npx --no-install foreman doctor        # checks it all works
 ```
 
 Then fill in `foreman.config.json`, create the labels `init` prints, and say in your AGENTS.md / CLAUDE.md which files each kind of work owns. Ask Claude Code to "coordinate the agents on milestone X".
+
+Run it as `npx --no-install foreman` (as the playbooks do), or from an npm script. A different npm package is also called `foreman`, and plain `npx foreman` in a checkout without dependencies installed would download and run that one.
 
 Installing it as a package rather than copying scripts matters: a Builder can't change the merge rules in its own branch and then run them. The rules change only when the version is bumped, and `package.json` is always on the list of risky paths.
 
@@ -102,6 +104,7 @@ export default {
 
 - **Guardrails, not security.** The guards stop accidental bypasses, not someone determined to get around them. Where GitHub branch protection is available, also make `approvalContext` and `requiredCheck` required status checks. The guards are then a second layer.
 - **The guard reads `foreman.config.json` from the agent's own checkout,** so a Builder that edits it changes what the guard protects locally. The config is always a risky path, so such a PR gets the stricter review, and `merge` itself runs with whatever config the merging checkout has. A broken config makes the guard refuse every `gh` and `git push` command until it's fixed.
+- **The hook refuses `gh` and `git push` whenever it can't trust the guard:** when foreman isn't installed, when the installed version isn't the one `package-lock.json` pins (run `npm install` after a rebase that bumped it), or when the guard fails to load.
 - **The command guard is Claude Code only.** Other agents get the git pre-push check and the commands, but nothing stops them typing `gh pr merge`.
 - **GitHub only.**
 

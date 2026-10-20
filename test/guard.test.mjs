@@ -5,7 +5,7 @@
  * git's pre-push check.
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -149,7 +149,8 @@ const blocked = [
 ];
 const allowed = [
 	['npx foreman merge 123 --rebased-from 0123456789abcdef0123456789abcdef01234567'],
-	['npx foreman approve 123 0123456789abcdef0123456789abcdef01234567'],
+	['npx --no-install foreman merge 123 --rebased-from 0123456789abcdef0123456789abcdef01234567'],
+	['npx --no-install foreman approve 123 0123456789abcdef0123456789abcdef01234567'],
 	['bash node_modules/@smknaqvi/foreman/scripts/merge.sh 123'],
 	['git push -u origin HEAD'],
 	['git push -u origin HEAD 2>&1 | tail -2'],
@@ -247,21 +248,47 @@ test('runs end to end as `foreman guard`', () => {
 	assert.equal(run('git status'), '');
 });
 
-test('runs end to end through the shim `foreman init` installs, and refuses gh until foreman is installed', () => {
+test('runs end to end through the shim `foreman init` installs', () => {
 	const project = tempDir('project');
 	mkdirSync(join(project, '.claude/hooks'), { recursive: true });
 	cpSync(join(ROOT, 'templates/claude/foreman-guard.mjs'), join(project, '.claude/hooks/foreman-guard.mjs'));
 	writeFileSync(join(project, 'package.json'), '{}');
 	const run = (command) => execFileSync('node', [join(project, '.claude/hooks/foreman-guard.mjs')], { input: hookInput(command), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: project } });
+	const reason = (command) => JSON.parse(run(command) || '{}').hookSpecificOutput?.permissionDecisionReason ?? '';
+	const version = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+	const lock = (v) => writeFileSync(join(project, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/@smknaqvi/foreman': { version: v } } }));
+
 	// Not installed yet: any gh or git push is refused, other commands run.
-	assert.equal(decision(run('gh pr view 1')), 'deny');
-	assert.equal(decision(run('git push -u origin HEAD')), 'deny');
+	assert.match(reason('gh pr view 1'), /isn't installed/);
+	assert.match(reason('git push -u origin HEAD'), /isn't installed/);
 	assert.equal(run('npm install'), '');
+
 	// Installed (a symlink, as npm link or a workspace would make it): the real guard decides.
 	mkdirSync(join(project, 'node_modules/@smknaqvi'), { recursive: true });
 	symlinkSync(ROOT, join(project, 'node_modules/@smknaqvi/foreman'));
+	lock(version);
 	assert.equal(decision(run('gh pr merge 1')), 'deny');
 	assert.equal(run('gh pr view 1'), '');
+
+	// The lockfile pins another version (a rebase brought a bump, npm install hasn't run): refuse until it has.
+	lock('0.0.1');
+	assert.match(reason('gh pr view 1'), /isn't the one package-lock.json pins \(0\.0\.1\): run npm install/);
+	assert.equal(run('ls'), '');
+	// A linked install (npm link, file:, workspaces) has no version in its lock entry: not a mismatch.
+	writeFileSync(join(project, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/@smknaqvi/foreman': { resolved: '../foreman', link: true } } }));
+	assert.equal(run('gh pr view 1'), '');
+	assert.equal(decision(run('gh pr merge 1')), 'deny');
+	lock(version);
+
+	// A foreman whose guard doesn't load (or has no decide()) refuses rather than letting everything through.
+	unlinkSync(join(project, 'node_modules/@smknaqvi/foreman')); // The symlink, not what it points to.
+	mkdirSync(join(project, 'node_modules/@smknaqvi/foreman'));
+	writeFileSync(join(project, 'node_modules/@smknaqvi/foreman/package.json'), JSON.stringify({ name: '@smknaqvi/foreman', version, exports: { './guard': './guard.mjs', './package.json': './package.json' } }));
+	writeFileSync(join(project, 'node_modules/@smknaqvi/foreman/guard.mjs'), 'export const nothing = 1;');
+	assert.match(reason('gh pr merge 1'), /no decide\(\)/);
+	writeFileSync(join(project, 'node_modules/@smknaqvi/foreman/guard.mjs'), 'this is not javascript (');
+	assert.match(reason('gh pr merge 1'), /can't run/);
+	assert.equal(run('ls'), '');
 });
 
 test('git\'s pre-push check refuses pushes to the base branch only', () => {
