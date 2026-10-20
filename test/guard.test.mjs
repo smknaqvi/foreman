@@ -274,6 +274,10 @@ test('runs end to end through the shim `foreman init` installs', () => {
 	lock('0.0.1');
 	assert.match(reason('gh pr view 1'), /isn't the one package-lock.json pins \(0\.0\.1\): run npm install/);
 	assert.equal(run('ls'), '');
+	// A linked install (npm link, file:, workspaces) has no version in its lock entry: not a mismatch.
+	writeFileSync(join(project, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/@smknaqvi/foreman': { resolved: '../foreman', link: true } } }));
+	assert.equal(run('gh pr view 1'), '');
+	assert.equal(decision(run('gh pr merge 1')), 'deny');
 	lock(version);
 
 	// A foreman whose guard doesn't load (or has no decide()) refuses rather than letting everything through.

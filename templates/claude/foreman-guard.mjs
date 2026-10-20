@@ -29,7 +29,9 @@ try {
 	// The installed foreman must be the reviewed one: same version and, when npm recorded it, same source.
 	const lockFile = join(root, 'package-lock.json');
 	const locked = existsSync(lockFile) ? json(lockFile).packages?.[`node_modules/${PKG}`] : undefined;
-	if (locked) {
+	// A linked install (npm link, file:, workspaces) is local work on foreman itself: nothing pinned to compare.
+	// No entry at all (an old lockfile, a nested workspace) also skips this check; the guard still runs.
+	if (locked && !locked.link) {
 		const hidden = join(root, 'node_modules/.package-lock.json');
 		const installed = { version: json(pkgFile).version, resolved: existsSync(hidden) ? json(hidden).packages?.[`node_modules/${PKG}`]?.resolved : undefined };
 		if (installed.version !== locked.version || (installed.resolved && locked.resolved && installed.resolved !== locked.resolved))
