@@ -11,6 +11,69 @@ The state lives on GitHub (labels, comments, commit statuses), so a crashed or r
 
 Extracted from a real migration project, where it ran waves of 3–4 Builders that merged dozens of PRs.
 
+```mermaid
+flowchart LR
+    obs["<b>foreman observe</b><br/>run by the Coordinator<br/>under Monitor"]
+    coord["<b>Coordinator</b><br/>Claude Code session:<br/>picks issues, reviews, approves"]
+    bld["<b>Builders</b><br/>one agent per issue,<br/>own worktree and env port"]
+    gh[("<b>GitHub</b><br/>issues, PRs,<br/>approval statuses, CI")]
+    gate{{"<b>foreman merge</b><br/>approved at this commit?<br/>up to date? green?"}}
+    main[("<b>main</b>")]
+
+    obs -- "one line per event" --> coord
+    obs -. "polls" .-> gh
+    coord -- "launch" --> bld
+    coord -- "claim issue,<br/>approve reviewed sha" --> gh
+    bld -- "push branch, open PR" --> gh
+    bld -- "after approval" --> gate
+    gh -. "approval, checks" .-> gate
+    gate -- "squash merge" --> main
+    bld --x|"gh pr merge, push to main:<br/>blocked by hook + pre-push"| main
+
+    classDef agent fill:#eef4ff,stroke:#4a6fd1,color:#1b2a4e
+    classDef proc fill:#f6f8fa,stroke:#57606a,color:#1f2328
+    classDef gatecls fill:#fff4e5,stroke:#d98a00,color:#4a2f00,stroke-width:2px
+    class coord,bld agent
+    class obs,gh,main proc
+    class gate gatecls
+    linkStyle 8 stroke:#c43c3c,color:#c43c3c,stroke-dasharray:4 3
+```
+
+<details><summary>One issue, end to end</summary>
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Coordinator
+    participant B as Builder
+    participant F as foreman CLI
+    participant G as GitHub
+
+    C->>F: claim #35;12 --branch --port
+    F->>G: working label + launch comment
+    C->>B: launch in its own worktree
+    B->>G: push branch, open PR "Closes #35;12"
+    G-->>C: checks passed (via foreman observe)
+    C->>C: note the head sha, then review
+    C->>F: approve PR sha
+    F->>G: approval status on that sha<br/>(refused if the PR moved on)
+    C->>B: "Approved at sha"
+    B->>B: rebase on main, push
+    B->>F: merge PR --rebased-from sha
+    F->>G: check approval, base, checks (under a lock)
+    alt the approved change, up to date, green
+        F->>G: squash merge into main
+    else behind main
+        F-->>B: refuse: rebase and retry
+    else changed beyond a clean rebase
+        F-->>B: refuse: back to the Coordinator
+    else checks not done
+        F-->>B: refuse: wait for checks
+    end
+```
+
+</details>
+
 ## Install
 
 Needs Node 20+, git 2.38+, bash and the GitHub CLI (`gh auth login`).
@@ -99,6 +162,39 @@ export default {
    - The Claude Code hook reads each Bash command the way bash would. That includes quoting, heredocs, `$(...)`, `bash -c`, `eval`, `xargs`, `env`, `cd` and branch switches.
    - It blocks `gh pr merge`, merge and ref-writing API calls (REST and GraphQL), pushes to the base branch, `--no-verify`, switching off `core.hooksPath`, and writing the approval status by hand.
    - Git's pre-push check catches pushes to the base however they're typed.
+
+<details><summary>Every check <code>foreman merge</code> makes, in order</summary>
+
+```mermaid
+flowchart TD
+    start(["foreman merge PR [--rebased-from sha]"]) --> lock["Take the merge lock<br/>(one merge at a time across worktrees)"]
+    lock --> open{"Open, not a draft,<br/>no conflicts?"}
+    open -- no --> r1["Refuse"]
+    open -- yes --> uptodate{"Contains the<br/>current main?"}
+    uptodate -- no --> r2["Refuse: rebase and retry"]
+    uptodate -- yes --> head{"Approved at<br/>the head?"}
+    head -- yes --> trusthead["Trust the head's checks"]
+    head -- no --> rebased{"Approved at the<br/>--rebased-from sha?"}
+    rebased -- no --> r3["Refuse: needs review"]
+    rebased -- yes --> replay{"That change replayed onto main<br/>(git merge-tree) gives exactly<br/>the head's files?"}
+    replay -- no --> r4["Refuse: changed since<br/>approval, re-review"]
+    replay -- yes --> carry["Copy the approval to the head.<br/>Trust the approved commit's checks,<br/>unless staleCheckPaths changed on main"]
+    trusthead --> docs{"Only docs<br/>changed?"}
+    carry --> docs
+    docs -- no --> required{"Required check passed<br/>on the trusted commit?"}
+    required -- no --> r5["Refuse: wait for checks"]
+    required -- yes --> failed
+    docs -- yes --> failed{"Nothing failed on the head?<br/>(nor pending, if trusting the head)"}
+    failed -- no --> r6["Refuse: checks failed"]
+    failed -- yes --> merge(["gh pr merge --squash<br/>--match-head-commit"])
+
+    classDef refuse fill:#fdecec,stroke:#c43c3c,color:#4a1212
+    classDef ok fill:#e8f6ec,stroke:#2f8f4e,color:#123a1f
+    class r1,r2,r3,r4,r5,r6 refuse
+    class merge ok
+```
+
+</details>
 
 ## Limits
 
