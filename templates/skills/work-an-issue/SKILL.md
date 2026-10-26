@@ -23,7 +23,7 @@ git fetch origin && git rebase origin/<base>     # the base branch in foreman.co
 ## Before the PR
 - Run the repo's `verifyCommand` (in `foreman.config.json`) and whatever the playbooks add.
 - Don't edit the plan file (`planFile`): parallel agents would conflict. Collect changes for the PR's "Plan updates" section.
-- `git fetch origin && git rebase origin/<base>`, then verify again.
+- `git fetch origin && git rebase origin/<base>` (then `npm install` if `package-lock.json` changed), and verify again.
 
 ## PR
 ```sh
@@ -38,14 +38,17 @@ PR body:
 - Edits to shared hotspots.
 - **Plan updates**: done items, new decisions and findings, written so the Coordinator can paste them in.
 
-Watch the checks (`gh pr checks --watch`) and fix any failure. Then report back and **wait for the Coordinator's review**.
+Watch the checks (`gh pr checks --watch`) and fix any failure. Checks that stay **queued** are waiting for a runner, not failing: don't re-push. Then report back and **wait for the Coordinator's review**.
+
+Images (screenshots, comparisons) can't be attached with `gh`: put their paths in your report to the Coordinator, and describe them in the PR.
 
 ## Merge (only after the Coordinator says "approved")
 The Coordinator approves the PR's **current commit** (`foreman approve`). That approval covers only that exact code. Fix any findings first: push, wait for checks, report back, and get re-approved. Once approved:
 ```sh
 approved=<sha from the Coordinator's "Approved at <sha>" message>   # not HEAD: it changes when you rebase
 git fetch origin && git rebase origin/<base>      # needed if other PRs merged meanwhile
+npm install                                       # if the rebase changed package-lock.json: the guard refuses gh and git push until it matches
 git push --force-with-lease                       # no need to wait for checks on a clean rebase
-npx --no-install foreman merge <PR> --rebased-from "$approved"  # same command on every retry
+npx --no-install foreman merge <PR> --rebased-from "$approved"  # same command on every retry; omit the flag if you didn't rebase
 ```
-`foreman merge` merges only if the change is identical to what was approved (a pure rebase), the PR is up to date, and the required check passed. If the rebase needed conflict fixes, the change differs: report back for re-review. If it refuses for another reason, do what it says and retry. Never merge any other way, and never merge someone else's PR (a hook blocks `gh pr merge` and pushes to the base anyway; if it stops you, you're on the wrong path). Afterwards stop your environment and report the merge.
+`foreman merge` merges only if the change is identical to what was approved (a pure rebase), the PR is up to date, and the required check passed. After a clean rebase it reuses the approved commit's checks, unless something in `staleCheckPaths` changed on the base since: then it waits for the new commit's own (`gh pr checks <PR> --watch`, then the same command again). PRs that only change documentation (`docsOnly`) don't wait for checks. Merges happen one at a time. If the rebase needed conflict fixes, the change differs: report back for re-review. If it refuses for another reason, do what it says and retry. Never merge any other way, and never merge someone else's PR (a hook blocks `gh pr merge` and pushes to the base anyway; if it stops you, you're on the wrong path). Afterwards stop your environment and report the merge.

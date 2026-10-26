@@ -1,6 +1,6 @@
 {
 	"name": "@smknaqvi/foreman",
-	"version": "0.1.2",
+	"version": "0.2.0",
 	"description": "Run a crew of coding agents on one GitHub repo: a Coordinator reviews and approves, Builders work one issue each, and nothing reaches main except through a gated merge.",
 	"license": "MIT",
 	"repository": {
