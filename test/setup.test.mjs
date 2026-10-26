@@ -2,7 +2,7 @@
  * Config loading, `foreman init` and `foreman workspace`, and the environment adapters' setup.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -127,4 +127,25 @@ test('init and workspace leave another hooks folder (husky...) alone', () => {
 	assert.ok(existsSync(join(dir, '.githooks/pre-push')), 'the check is still written, to be called from .husky');
 	cli(dir, 'workspace');
 	assert.equal(execFileSync('git', ['-C', dir, 'config', 'core.hooksPath'], { encoding: 'utf8' }).trim(), '.husky');
+});
+
+test('init --ci --self-hosted: the workflow runs on those labels and keeps the machine awake', () => {
+	const dir = repo();
+	cli(dir, 'init', '--ci', '--self-hosted', 'my-mac');
+	const ci = readFileSync(join(dir, '.github/workflows/verify.yml'), 'utf8');
+	assert.match(ci, /runs-on: \[self-hosted, my-mac\]/);
+	assert.match(ci, /keep-awake\.sh start/);
+	assert.match(ci, /foreman env remove/);
+	assert.ok(statSync(join(dir, '.github/foreman/keep-awake.sh')).mode & 0o100, 'keep-awake.sh is executable');
+});
+
+test('guard --self-test: passes once init has run, fails when the pre-push check stops refusing', () => {
+	const dir = repo();
+	cli(dir, 'init');
+	// The hook loads foreman from the repo's node_modules: link this checkout in (a linked install skips the lockfile check).
+	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
+	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
+	assert.match(cli(dir, 'guard', '--self-test'), /8\/8 passed/);
+	writeFileSync(join(dir, '.githooks/pre-push'), '#!/usr/bin/env bash\nexit 0\n');
+	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}pre-push refuses main/.test(e.stdout));
 });

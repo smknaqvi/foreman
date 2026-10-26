@@ -1,0 +1,50 @@
+# The check `foreman merge` waits for (requiredCheck in foreman.config.json: the job's name, "verify").
+# Put the same command here that Builders run before opening a PR (verifyCommand).
+#
+# Runs on a self-hosted runner (labels __LABELS__), not on GitHub's machines. While the runner is offline (a
+# Mac asleep, Docker not running) runs wait as "queued" and start when it's back: that isn't a failure, so
+# don't re-push. A self-hosted runner runs every PR's code with its own user's permissions and isn't wiped
+# between jobs: keep the repo private, with only people and agents you trust pushing, while it's attached.
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [__BASE__]
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: [__LABELS__]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # A Mac that sleeps mid-job loses the runner's connection: keep it awake for this job only.
+      - name: Keep the machine awake during this job
+        run: bash .github/foreman/keep-awake.sh start 30
+
+      # No cache action: the runner keeps npm's own cache between jobs. No audit: npm's advisory service can
+      # take minutes to answer.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+
+      # A cancelled job can leave its environment behind. If the job's environment uses a fixed port (keep it
+      # away from the agents' own), add --port <it> here and below.
+      - name: Remove a leftover environment from an earlier job
+        run: npx --no-install foreman env remove
+
+      - run: __VERIFY__
+
+      - name: Remove this job's environment
+        if: always()
+        run: npx --no-install foreman env remove
+
+      - name: Let the machine sleep again
+        if: always()
+        run: bash .github/foreman/keep-awake.sh stop

@@ -2,13 +2,18 @@
 /**
  * A stand-in for the GitHub CLI, for test/merge.test.mjs. It answers exactly the calls scripts/merge.sh
  * makes, from a JSON state file ($FAKE_GH_STATE) the test controls, and records approvals and merges there.
- *   { repo, pr: { number, state, isDraft, head, mergeable }, approved: [sha], verify: { sha: conclusion },
- *     failed: { sha: "names" }, checksPass, merged }
+ *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], verify: { sha: conclusion },
+ *     failed: { sha: "names" }, checksPass, merged, origin? }
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const file = process.env.FAKE_GH_STATE;
 const s = JSON.parse(readFileSync(file, 'utf8'));
+// With { origin, pr.branch }, the PR's head follows its branch on the origin, as on GitHub after a push.
+if (s.origin && s.pr.branch) {
+	try { s.pr.head = execFileSync('git', ['-C', s.origin, 'rev-parse', `refs/heads/${s.pr.branch}`], { encoding: 'utf8' }).trim(); } catch {}
+}
 const args = process.argv.slice(2);
 const save = () => writeFileSync(file, JSON.stringify(s));
 const out = (x) => process.stdout.write(`${x}\n`);
@@ -28,6 +33,7 @@ else if (a === 'api') {
 } else if (a === 'pr' && b === 'view') {
 	const json = args[args.indexOf('--json') + 1];
 	if (json === 'state') out(s.merged ? 'MERGED' : s.pr.state);
+	else if (json === 'headRefOid') out(JSON.stringify({ headRefOid: s.pr.head }));
 	else out(`${s.pr.state} ${s.pr.isDraft} ${s.pr.head} ${s.pr.mergeable}`);
 } else if (a === 'pr' && b === 'checks') process.exit(s.checksPass ? 0 : 1);
 else if (a === 'pr' && b === 'merge') {

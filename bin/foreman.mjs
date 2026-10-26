@@ -16,16 +16,31 @@ Coordinator
   release <issue>                         un-mark an abandoned issue
   approve <PR> <reviewed sha>             approve exactly the commit you reviewed
   observe [--once]                        print a line whenever something needs attention (run under Monitor)
+  tick [--dry-run]                        what needs no judgement: merge approved, green PRs (clean rebases
+                                          only) and remove orphaned environments
+
+When every agent stops (a usage limit)
+  watchdog install|uninstall              run a round every few minutes (launchd on macOS; prints a cron line
+                                          elsewhere): after a usage-limit stop it runs tick, then starts a
+                                          Coordinator once the limit resets
+  watchdog status                         what it did and would do now
+  watchdog pause|unpause|stop             hold it; stop the Coordinator it started
+  watchdog run [--dry-run]                one round (what launchd runs)
 
 Builders
   workspace [--port <p>]                  prepare this checkout (pre-push check, its own environment port)
+  env remove [--port <p>]                 remove this checkout's environment (running or stopped) and anything
+                                          on that port, e.g. before and after a CI job
   merge <PR> [--rebased-from <sha>]       merge an approved PR: refuses unless it's exactly what was approved,
                                           up to date and green
 
 Setup
-  init [--force] [--ci] [--conductor]     set a repo up (config, hooks, guard, playbooks)
+  init [--force] [--ci [--self-hosted <labels>]] [--conductor]
+                                          set a repo up (config, hooks, guard, playbooks, CI)
   doctor                                  check this checkout is ready
   guard                                   the Claude Code hook itself (reads the hook payload on stdin)
+  guard --self-test                       the hook and pre-push check refuse what they should (no GitHub
+                                          needed: for CI)
 `;
 
 // Output piped into something that stops reading early (`foreman status | head`): just stop.
@@ -51,6 +66,33 @@ async function main() {
 			const { values } = flags({ once: { type: 'boolean' } });
 			return (await import('../lib/observe.mjs')).observe(loadConfig(), values);
 		}
+		case 'tick': {
+			const { values } = flags({ 'dry-run': { type: 'boolean' } });
+			await (await import('../lib/tick.mjs')).tick(loadConfig(), { dryRun: values['dry-run'] });
+			return 0;
+		}
+		case 'watchdog': {
+			const { values, positionals } = flags({ 'dry-run': { type: 'boolean' }, launch: { type: 'boolean' } });
+			const wd = await import('../lib/watchdog.mjs');
+			const config = loadConfig();
+			switch (positionals[0]) {
+				case 'run': return wd.run(config, { dryRun: values['dry-run'] });
+				case 'act': return wd.act(config, { launch: values.launch }); // Internal: the acting half of `run`.
+				case 'session': return wd.session(config, positionals[1]); // Internal: a Coordinator started by `run`.
+				case 'install': return wd.install(config);
+				case 'uninstall': return wd.uninstall(config);
+				case 'status': case undefined: return wd.status(config);
+				case 'pause': return wd.pause(config, true);
+				case 'unpause': return wd.pause(config, false);
+				case 'stop': return wd.stop(config);
+				default: throw new Error(`unknown watchdog command "${positionals[0]}" (install, uninstall, status, pause, unpause, stop, run)`);
+			}
+		}
+		case 'env': {
+			const { values, positionals } = flags({ port: { type: 'string' } });
+			if (positionals[0] !== 'remove') throw new Error('usage: foreman env remove [--port <port>]');
+			return (await import('../lib/crew.mjs')).removeEnv(loadConfig(), values);
+		}
 		case 'claim': {
 			const { values, positionals } = flags({ branch: { type: 'string' }, port: { type: 'string' } });
 			return (await import('../lib/crew.mjs')).claim(loadConfig(), positionals[0], values);
@@ -62,12 +104,13 @@ async function main() {
 			return (await import('../lib/crew.mjs')).workspace(loadConfig(), values);
 		}
 		case 'init': {
-			const { values } = flags({ force: { type: 'boolean' }, ci: { type: 'boolean' }, conductor: { type: 'boolean' } });
+			const { values } = flags({ force: { type: 'boolean' }, ci: { type: 'boolean' }, 'self-hosted': { type: 'string' }, conductor: { type: 'boolean' } });
 			return (await import('../lib/init.mjs')).init(process.cwd(), values);
 		}
 		case 'doctor':
 			return (await import('../lib/doctor.mjs')).doctor(process.cwd());
 		case 'guard':
+			if (rest.includes('--self-test')) return (await import('../lib/selftest.mjs')).selfTest(loadConfig());
 			(await import('../lib/guard.mjs')).runHook();
 			return 0;
 		case undefined:

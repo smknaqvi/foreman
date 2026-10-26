@@ -11,17 +11,17 @@ You are the **Coordinator**. Builders each take one issue to a PR. You review an
 
 Settings live in `foreman.config.json`: the base branch, the required check, `hotspots`, `riskyPaths`, `playbooks`, `planFile`, `maxBuilders`, `env`. Read it, and AGENTS.md, first.
 
-**Start every session with `npx --no-install foreman status`.** It shows the base branch's CI, which issues have a Builder, each open PR's checks, approval and risky files, recent merges, and local environments still running. It's built from GitHub and the machine, so it's the same picture after an interruption as before.
+**Start every session with `npx --no-install foreman status`,** and run it again when you come back to a session after a pause. It shows the base branch's CI, which issues have a Builder, each open PR's checks, approval and risky files, recent merges, whether the last agent session stopped at a usage limit, the watchdog, and local environments still running. It's built from GitHub and the machine, so it's the same picture after an interruption as before. **If it says a Coordinator started by the watchdog is running, don't start a second one:** follow it (`npx --no-install foreman watchdog status`), or take over with `npx --no-install foreman watchdog stop` first.
 
 ## When to use the full loop
 - **A milestone, or 3+ independent issues:** the full loop (waves, the Observer, one plan-updates PR at the end).
-- **One or two small issues:** launch a single Builder the same way (claim, review, approve, merge), without waves or the Observer.
+- **One or two small issues:** launch a single Builder the same way (claim, review, approve, merge), without waves or the Observer. Keep its "Plan updates" and apply several small PRs' updates together in one later Coordinator PR.
 - **A one-line fix you're already looking at:** still a branch and a PR through the same review and merge, but no Builder needed.
 
 ## 1. Pick the wave
-- `gh issue list --state open` (or the current milestone). Skip issues labeled "needs team input" that can't progress, and "decision" issues: those are the user's.
+- `gh issue list --state open` (or `--milestone "<current milestone>"`). Skip issues labeled "needs team input" that can't progress, and "decision" issues: those are the user's.
 - Up to `maxBuilders` at a time whose files don't overlap. Serialize anything touching the same `hotspots` entry. If two issues would edit the same file, move that piece from one to the other first, and say so in an issue comment.
-- Size to the machine: if environments use Docker, `npx --no-install foreman observe` warns when memory gets high.
+- Size to the machine: if environments use Docker, `npx --no-install foreman observe` warns when memory gets high (`observe.memoryHigh` and `memoryCritical` in the config). Stop your own environment if you need the room.
 
 ## 2. Launch
 First record it on GitHub, so the run can be picked up if this session stops:
@@ -30,7 +30,7 @@ npx --no-install foreman claim <N> --branch <prefix>/issue-<N>-<slug> --port <po
 ```
 (`npx --no-install foreman release <N>` if you abandon it; closing the issue makes it irrelevant.)
 
-Then use the Agent tool, one per issue: `isolation: "worktree"`, `run_in_background: true`, a **unique port** each. The prompt must be self-contained:
+Then use the Agent tool, one per issue: `isolation: "worktree"`, `run_in_background: true`, a **unique port** each. In Conductor, take ports from your workspace's range (`$CONDUCTOR_PORT`+1 … +9); your own environment uses `$CONDUCTOR_PORT`. The prompt must be self-contained:
 - read AGENTS.md, the `work-an-issue` skill and every playbook in `foreman.config.json`; then `gh issue view N`
 - `git checkout -b <branch>`, `npm install`, `npx --no-install foreman workspace --port <port>`, then start its environment as the playbooks say
 - never touch other environments or containers
@@ -38,7 +38,7 @@ Then use the Agent tool, one per issue: `isolation: "worktree"`, `run_in_backgro
 - the deliverable: a PR with `Closes #N`, a "Plan updates" section, green checks, and (for visual work) comparison image paths in its final report
 - then **stop and wait for review**; don't merge until told
 
-For a wave, start the **Observer**: run `npx --no-install foreman observe` with the Monitor tool (re-arm it when it expires). It prints a line when a PR opens or merges, checks finish, the base branch's CI fails, or Docker memory runs high. It only reports; you decide.
+For a wave, start the **Observer**: run `npx --no-install foreman observe` with the Monitor tool (re-arm it when it expires, about every 30 minutes). It prints a line when a PR opens or merges, checks finish, the base branch's CI fails, or Docker memory runs high. It only reports; you decide. Checks that show as **queued** are waiting for a runner (a self-hosted one may be asleep): that isn't a failure, so don't re-push.
 
 ## 3. Review each PR as it arrives
 1. Look at what the Builder reports (screenshots, test output). Does it really do what the issue asks?
@@ -48,20 +48,24 @@ For a wave, start the **Observer**: run `npx --no-install foreman observe` with 
 5. **Risky PRs get more** (`npx --no-install foreman status` marks them RISKY: `riskyPaths`, plus CI, Claude settings, git hooks, the config and the dependency files, which pin foreman itself). Review at a higher level and get a second opinion from a fresh Agent on a different model: "Does PR #<N> do what issue #<M> asks, and only that? What could it break?"
 6. Findings: SendMessage the Builder specific fixes, then re-review after it pushes.
 7. Approve: `npx --no-install foreman approve <N> "$sha"`. It stamps the reviewed commit and refuses if the PR moved on during review. Then SendMessage the Builder: "Approved at <full sha>. Follow the Merge section of work-an-issue, using that sha for --rebased-from." Anything pushed after this needs re-approval, except a pure rebase, which `foreman merge --rebased-from` verifies.
-8. After a merge, tell the Builders with open PRs to rebase (`git fetch && git rebase origin/<base>`, push, re-check).
+8. After a merge, tell the Builders with open PRs to rebase (`git fetch && git rebase origin/<base>`, `npm install` if `package-lock.json` changed, push, re-check).
 
 ## 4. After merges
 - If the repo has a `planFile`, apply the PRs' "Plan updates" to it in a small Coordinator PR, through the same review and merge.
 - Close or adjust issues. File new issues the Builders surfaced.
-- Report to the user in plain language: what merged, what's waiting on them (decisions, files, accounts), what's next.
+- Report to the user in plain language: what merged, what's waiting on them (decisions, files, accounts), what's next. Images can't be attached with `gh`: show them in your report instead.
 
 ## Resuming after an interruption
-Usage limits or a closed session can stop agents mid-task, sometimes mid-merge, and the user may have merged things by hand meanwhile. Background Builders stop with the session. Before acting:
-1. `npx --no-install foreman status`. The base branch must be green. Apply "Plan updates" from recent merges if that hadn't happened.
-2. **Approved and green PRs:** it prints the exact `foreman merge` command. Rebase if needed and run it yourself.
-3. **Claimed issues with no PR, or a PR still in review:** relaunch a Builder on the same branch and port. It continues from what was pushed.
-4. **Environments left running:** one marked ORPHANED (its folder is gone) is safe to remove. Remove one on a port you claimed only once you're sure its Builder is gone. Leave the rest: they may be another workspace's.
+Usage limits or a closed session can stop agents mid-task, sometimes mid-merge, and the user may have merged things by hand meanwhile. Background Builders stop with the session; anything a Builder hadn't pushed is gone. If the repo runs the **watchdog** (`npx --no-install foreman watchdog install`), it notices a usage-limit stop, merges what's approved and green, and starts a Coordinator once the limit resets: you may be that Coordinator. Either way, rebuild the picture before acting:
+1. `npx --no-install foreman status`. The base branch must be green. It lists PRs merged in the last 24 hours: apply their "Plan updates" if that hadn't happened.
+2. **Approved and green PRs:** it prints the exact `foreman merge` command, with `--rebased-from <sha>` when the approval was on a commit from before a rebase. `npx --no-install foreman tick` rebases and merges all of them (clean rebases only); or rebase and run the command yourself.
+3. **Claimed issues with no PR, or a PR still in review:** relaunch a Builder on the same branch and port. It continues from what was pushed. The stopped Builder's worktree may still have that branch checked out, so tell the new one to work on `git switch --detach origin/<branch>` and push with `git push origin HEAD:<branch>`; and its environment may still hold the port, so remove that first (`npx --no-install foreman env remove --port <port>`, from the new worktree).
+4. **Environments left running:** one marked ORPHANED (its folder is gone) is safe to remove (`foreman tick` does it). Remove one on a port you claimed only once you're sure its Builder is gone. Leave the rest: they may be another workspace's.
 5. Restart the Observer if a wave is still going.
+
+Then continue from what actually happened.
+
+**Started by the watchdog?** You're running unattended: nobody answers questions. Finish only what's in flight (claimed issues, their PRs, approved PRs) and claim nothing new. Run Builders in the foreground (`run_in_background: false`; several Agent calls in one message still run at the same time), so your session lasts until they're done. Leave anything that needs a person with a comment saying what's needed, and end with a short summary.
 
 ## Guardrails
 - Copy commit IDs from `gh` output; never type or recall them.
@@ -69,3 +73,4 @@ Usage limits or a closed session can stop agents mid-task, sometimes mid-merge, 
 - Agents never merge each other's PRs or edit the plan file.
 - Outward-facing actions beyond the repo (DNS, hosting, emails, posting publicly) need the user's explicit go-ahead.
 - Clean up: stop the Observer when the wave is done; Builders stop their environments when done.
+- The watchdog (if installed) only starts a Coordinator after a usage-limit stop with work in flight. `npx --no-install foreman watchdog pause` holds it, for example while you reorganize the work by hand.
