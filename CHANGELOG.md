@@ -2,6 +2,10 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
+## 0.2.1 (2026-10-26)
+- `foreman env remove` is best effort, like a CI clean-up step should be: a container removed meanwhile, or a volume or network still in use, is reported and skipped instead of failing the job.
+- Resuming a Builder: free its old port only if `foreman status` shows that environment serving the stopped Builder's worktree (or ORPHANED); otherwise use another port. `env remove --port` removes whatever is on the port.
+
 ## 0.2.0 (2026-10-26)
 - **`foreman watchdog`: keeps the crew going after a usage limit, without AI.** A launchd job (macOS; a cron line elsewhere) runs a round every few minutes. When work is in flight and the newest agent session in the repo stopped at a usage limit (read from Claude Code's transcripts), it runs `foreman tick` and, once the limit resets, starts a Coordinator in the background (`claude -p`) in its own worktree to finish the work in flight. Retries after another limit stop; doesn't restart a Coordinator that ended normally until the work changes; at most `maxSessionsPerDay`. `install`, `uninstall`, `status`, `pause`, `unpause`, `stop`, `run [--dry-run]`. Settings: `watchdog` in the config.
 - **`foreman tick [--dry-run]`**: rebases approved, green PRs onto the base (clean rebases only) and merges them through `foreman merge`; removes orphaned environments. Stops merging while the base branch's CI is red.

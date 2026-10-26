@@ -80,7 +80,7 @@ sequenceDiagram
 Needs Node 20+, git 2.38+, bash and the GitHub CLI (`gh auth login`).
 
 ```sh
-npm install --save-dev github:smknaqvi/foreman#v0.2.0    # pin a release tag; the package is @smknaqvi/foreman, the command foreman
+npm install --save-dev github:smknaqvi/foreman#v0.2.1    # pin a release tag; the package is @smknaqvi/foreman, the command foreman
 npx --no-install foreman init          # config, git hook, Claude Code guard, the two playbooks (--ci [--self-hosted <labels>], --conductor for more)
 npx --no-install foreman doctor        # checks it all works
 ```
