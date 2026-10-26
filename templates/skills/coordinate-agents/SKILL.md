@@ -73,4 +73,4 @@ Then continue from what actually happened.
 - Agents never merge each other's PRs or edit the plan file.
 - Outward-facing actions beyond the repo (DNS, hosting, emails, posting publicly) need the user's explicit go-ahead.
 - Clean up: stop the Observer when the wave is done; Builders stop their environments when done.
-- The watchdog (if installed) only starts a Coordinator after a usage-limit stop with work in flight. `npx --no-install foreman watchdog pause` holds it, for example while you reorganize the work by hand.
+- The watchdog (if installed) only starts a Coordinator after a usage-limit stop with work in flight. `npx --no-install foreman watchdog pause` holds it, for example while you reorganize the work by hand. When agents go quiet for 10 minutes it merges approved, green PRs, but not while your Observer is running: keep it running (re-arm it) while you hold an approved PR back on purpose, or don't approve it yet.

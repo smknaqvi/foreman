@@ -10,7 +10,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { DEFAULTS, loadConfig } from '../lib/config.mjs';
-import { agentActivity, limitStop, projectFolder, resetTime } from '../lib/sessions.mjs';
+import { agentActivity, limitStop, observerRound, projectFolder, resetTime } from '../lib/sessions.mjs';
 import { rebaseAndMerge } from '../lib/tick.mjs';
 import { classify, decide, plist } from '../lib/watchdog.mjs';
 
@@ -64,6 +64,35 @@ test('decide: agents still working (no limit stop) are left alone, unless staleM
 	assert.equal(d({ ...quiet, ready: 1 }).tick, true, 'quiet for a while: merge what is approved and green');
 	assert.equal(d(quiet).launch, false, 'staleMinutes 0: silence alone never starts a Coordinator');
 	assert.equal(d({ ...quiet, settings: { ...base.settings, staleMinutes: 30 } }).launch, true);
+});
+
+test('decide: a running Observer means a Coordinator is waiting on checks: no merges, no new Coordinator', () => {
+	// The Coordinator's own transcript is quiet while checks run, but its Observer finished a round a minute ago.
+	const watching = { ready: 1, activity: { lastActiveAt: NOW - 45 * min, limited: null, observedAt: NOW - min } };
+	assert.deepEqual([d(watching).tick, d(watching).launch], [false, false], 'an approved PR may be held back on purpose');
+	assert.match(d(watching).why, /watching the PRs/);
+	assert.equal(d({ ...watching, settings: { ...base.settings, staleMinutes: 30 } }).launch, false);
+	const longInterval = { ...watching, observeSeconds: 600, activity: { ...watching.activity, observedAt: NOW - 20 * min } };
+	assert.equal(d(longInterval).tick, false, 'within three of its own (long) intervals it still counts');
+	const gone = { ...watching, activity: { ...watching.activity, observedAt: NOW - 40 * min } };
+	assert.equal(d(gone).tick, true, 'an Observer that stopped long ago no longer holds merges back');
+	const limited = { ...watching, activity: { ...base.activity, observedAt: NOW - min } };
+	assert.equal(d(limited).launch, true, 'a usage-limit stop still wins: the Observer may outlive its stopped session for a while');
+});
+
+test('observerRound: the newest Observer round across every worktree of the repo', () => {
+	const repo = temp('foreman-repo-');
+	execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+	execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x']);
+	assert.deepEqual(observerRound(repo), { at: 0, checkout: '' });
+	const wt = join(temp('foreman-wt-'), 'coordinator');
+	execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', '--detach', wt]);
+	const dir = join(execFileSync('git', ['-C', wt, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim(), 'foreman');
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, 'observer.json'), '{}');
+	const o = observerRound(repo);
+	assert.equal(o.checkout, wt);
+	assert.ok(Date.now() - o.at < 60e3);
 });
 
 test('decide: a Coordinator that ended normally is not restarted until the work in flight changes', () => {
