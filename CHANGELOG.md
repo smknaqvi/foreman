@@ -2,6 +2,9 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
+## 0.2.2 (2026-10-26)
+- **The watchdog leaves merges to a Coordinator that's watching.** While a `foreman observe` in any worktree of the repo has finished a round in the last 5 minutes (or 3 of its intervals), the watchdog neither merges approved PRs nor starts a Coordinator: that Coordinator is only waiting on checks, and may be holding an approved PR back on purpose. Before, a Coordinator whose transcript was quiet for 10 minutes (waiting on a slow runner) had its plan-update PR merged ahead of the PRs it described. A usage-limit stop still wins. `foreman status` shows the Observer's last round.
+
 ## 0.2.1 (2026-10-26)
 - `foreman env remove` is best effort, like a CI clean-up step should be: a container removed meanwhile, or a volume or network still in use, is reported and skipped instead of failing the job.
 - Resuming a Builder: free its old port only if `foreman status` shows that environment serving the stopped Builder's worktree (or ORPHANED); otherwise use another port. `env remove --port` removes whatever is on the port.

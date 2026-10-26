@@ -170,7 +170,7 @@ npx --no-install foreman watchdog status    # what it did, and what a round woul
 
 Every `everyMinutes` a round runs. It does nothing while paused, while a Coordinator it started is still running, or when nothing is in flight (no claimed issue, no approved PR). Otherwise it looks at the Claude Code sessions working in this repo (their transcripts on this machine, in every worktree):
 
-- **Agents are working:** nothing, except merging approved, green PRs nobody has touched for 10 minutes.
+- **Agents are working:** nothing, except merging approved, green PRs nobody has touched for 10 minutes. Not even that while a Coordinator's `foreman observe` is running (it finished a round in the last 5 minutes, or 3 of its intervals): the Coordinator is waiting on checks and may be holding an approved PR back on purpose.
 - **The newest session stopped at a usage limit** ("You've hit your session limit · resets 1:50am"): it runs `foreman tick` right away (merging needs no AI, so that happens during the limit), and once the limit has reset it starts a Coordinator in the background in its own worktree (`watchdog.dir`, by default beside the main checkout): `claude -p` with a prompt to resume as Coordinator, finish only what's in flight, and run Builders in the foreground so the session lasts.
 - **Nothing for `staleMinutes`:** the same, if you set it (off by default: silence alone usually means a person is away, not that a limit hit).
 
