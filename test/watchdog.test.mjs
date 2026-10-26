@@ -245,3 +245,34 @@ test('baseFailing: a later hand-started run doesn\'t hide a failed push run', as
 	const latest = (list) => [...new Map([...list].reverse().map((r) => [r.workflowName, r])).values()].reverse();
 	assert.equal(baseFailing({ runs: latest(runs), pushRuns: latest(runs.filter((r) => r.event === 'push')) }).length, 1);
 });
+
+test('prepare: keeps an earlier Coordinator\'s leftovers on a branch, moves to the latest base, survives a deleted folder', async () => {
+	const { prepare } = await import('../lib/watchdog.mjs');
+	const dir = temp('foreman-prep-');
+	const origin = join(dir, 'origin.git'), work = join(dir, 'work'), coord = join(dir, 'coord');
+	execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+	execFileSync('git', ['clone', '-q', origin, work], { stdio: 'ignore' });
+	const git = (cwd, ...a) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
+	git(work, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+	writeFileSync(join(work, 'a.txt'), '1\n'); git(work, 'add', '-A'); git(work, 'commit', '-q', '-m', 'one'); git(work, 'push', '-q', 'origin', 'main');
+	const config = { ...DEFAULTS, root: work, watchdog: { ...DEFAULTS.watchdog, setup: '' } };
+	const quiet = () => {};
+	prepare(config, coord, quiet);
+	writeFileSync(join(coord, 'half-done.txt'), 'wip\n');
+	writeFileSync(join(work, 'a.txt'), '2\n'); git(work, 'commit', '-qam', 'two'); git(work, 'push', '-q', 'origin', 'main');
+	const said = [];
+	prepare(config, coord, (m) => said.push(m));
+	assert.equal(git(coord, 'rev-parse', 'HEAD'), git(work, 'rev-parse', 'HEAD'), 'on the latest base');
+	assert.match(said.join('\n'), /kept them on the local branch foreman\/leftovers-/);
+	assert.equal(git(coord, 'status', '--porcelain'), '');
+	rmSync(coord, { recursive: true, force: true });
+	prepare(config, coord, quiet);
+	assert.equal(git(coord, 'rev-parse', 'HEAD'), git(work, 'rev-parse', 'HEAD'), 'recreated after being deleted by hand');
+});
+
+test('init --self-hosted without --ci writes nothing', () => {
+	const dir = temp('foreman-init-');
+	execFileSync('git', ['init', '-q', '-b', 'main', dir]);
+	assert.throws(() => execFileSync('node', [join(ROOT, 'bin/foreman.mjs'), 'init', '--self-hosted', 'mac'], { cwd: dir, stdio: 'pipe' }), /goes with --ci/);
+	assert.throws(() => readFileSync(join(dir, 'foreman.config.json')));
+});
