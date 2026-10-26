@@ -72,12 +72,13 @@ async function main() {
 			return 0;
 		}
 		case 'watchdog': {
-			const { values, positionals } = flags({ 'dry-run': { type: 'boolean' } });
+			const { values, positionals } = flags({ 'dry-run': { type: 'boolean' }, launch: { type: 'boolean' } });
 			const wd = await import('../lib/watchdog.mjs');
 			const config = loadConfig();
 			switch (positionals[0]) {
 				case 'run': return wd.run(config, { dryRun: values['dry-run'] });
-				case 'session': return wd.session(config, positionals[1]);
+				case 'act': return wd.act(config, { launch: values.launch }); // Internal: the acting half of `run`.
+				case 'session': return wd.session(config, positionals[1]); // Internal: a Coordinator started by `run`.
 				case 'install': return wd.install(config);
 				case 'uninstall': return wd.uninstall(config);
 				case 'status': case undefined: return wd.status(config);

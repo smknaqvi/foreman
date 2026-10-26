@@ -50,8 +50,10 @@ test('decide: before the reset it only merges what is ready', () => {
 	assert.match(d(waiting).why, /resets/);
 });
 
-test('decide: an unreadable reset time means try every round', () => {
-	assert.equal(d({ activity: { ...base.activity, limited: { ...base.activity.limited, resetsAt: null } } }).launch, true);
+test('decide: an unreadable reset time means trying again an hour after each stop, not every round', () => {
+	const unknown = (minutesAgo) => ({ activity: { lastActiveAt: NOW - minutesAgo * min, limited: { at: NOW - minutesAgo * min, text: 'limit', resetsAt: null } } });
+	assert.equal(d(unknown(20)).launch, false);
+	assert.equal(d(unknown(61)).launch, true);
 });
 
 test('decide: agents still working (no limit stop) are left alone, unless staleMinutes says otherwise', () => {
@@ -190,20 +192,20 @@ function tickRepo(featureFile) {
 	return { config, prObj, state, branch, pr };
 }
 
-test('tick: rebases an approved PR onto the base and merges it through the gate', () => {
+test('tick: rebases an approved PR onto the base and merges it through the gate', async () => {
 	const t = tickRepo('app.txt');
 	const said = [];
-	const ok = rebaseAndMerge(t.config, t.prObj, (m) => said.push(m));
+	const ok = await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m));
 	assert.equal(ok, true, said.join('\n'));
 	assert.notEqual(t.branch(), t.pr, 'the rebased branch was pushed');
 	assert.equal(t.state().merged, true);
 	assert.ok(t.state().approved.includes(t.branch()), 'the approval was carried over to the rebased commit');
 });
 
-test('tick: leaves a PR that does not rebase cleanly alone', () => {
+test('tick: leaves a PR that does not rebase cleanly alone', async () => {
 	const t = tickRepo('other.txt'); // Main changed the same file.
 	const said = [];
-	assert.equal(rebaseAndMerge(t.config, t.prObj, (m) => said.push(m)), false);
+	assert.equal(await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m)), false);
 	assert.match(said.join('\n'), /doesn't rebase cleanly/);
 	assert.equal(t.branch(), t.pr, 'the branch is untouched');
 	assert.equal(t.state().merged, false);
@@ -221,4 +223,25 @@ test('watchdog session: runs the command and records how it ended', () => {
 	assert.equal(result.outcome, 'limited');
 	assert.equal(result.sessionId, 's1');
 	assert.match(readFileSync(join(dir, 'watchdog.log'), 'utf8'), /Coordinator run-1 limited/);
+});
+
+test('watchdog stop never signals a process that only shares the recorded pid', () => {
+	const repo = temp('foreman-stop-');
+	execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+	const dir = join(repo, '.git/foreman/watchdog');
+	mkdirSync(dir, { recursive: true });
+	// This test's own pid, as if the Mac had restarted and handed the number to something else.
+	writeFileSync(join(dir, 'state.json'), JSON.stringify({ session: { id: 'old-run', pid: process.pid, startedAt: Date.now() } }));
+	const out = execFileSync('node', [join(ROOT, 'bin/foreman.mjs'), 'watchdog', 'stop'], { cwd: repo, encoding: 'utf8' });
+	assert.match(out, /No Coordinator started by the watchdog is running/);
+});
+
+test('baseFailing: a later hand-started run doesn\'t hide a failed push run', async () => {
+	const { baseFailing } = await import('../lib/state.mjs');
+	const runs = [
+		{ workflowName: 'Deploy', event: 'workflow_dispatch', status: 'completed', conclusion: 'success' },
+		{ workflowName: 'Deploy', event: 'push', status: 'completed', conclusion: 'failure' },
+	];
+	const latest = (list) => [...new Map([...list].reverse().map((r) => [r.workflowName, r])).values()].reverse();
+	assert.equal(baseFailing({ runs: latest(runs), pushRuns: latest(runs.filter((r) => r.event === 'push')) }).length, 1);
 });
