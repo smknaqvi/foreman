@@ -1,0 +1,13 @@
+{
+	"baseBranch": "main",
+	"requiredCheck": "verify",
+	"verifyCommand": "npm run lint && npm test",
+	"riskyPaths": ["prisma/", "src/middleware.ts"],
+	"hotspots": ["prisma/schema.prisma", "src/app/layout.tsx"],
+	"maxBuilders": 3,
+	"env": {
+		"adapter": ["nextjs", "neon"],
+		"nextjs": { "vars": { "NEXTAUTH_URL": "http://localhost:{port}" } },
+		"neon": { "projectId": "late-sky-123456", "envFile": ".env.local" }
+	}
+}
