@@ -2,6 +2,17 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
+## Unreleased
+- **More environment adapters.**
+  - `nextjs`, `rails` and `dev-server` (any command): a dev server per checkout on its own port. `foreman workspace --port` records the port, the new **`foreman env start`** runs the server in the background with `PORT` (and `vars`, e.g. a per-checkout `DATABASE_URL`) set and waits until it listens, and `foreman env remove` stops it. Running servers are found with `lsof` on the recorded ports, so ones started by hand count too.
+  - `neon`: a Neon database branch per checkout, its connection string written to an env file. `foreman tick` deletes branches whose checkout is gone. Needs `NEON_API_KEY`.
+- **Combining adapters.** `env.adapter` may be a list (`["nextjs", "neon"]`), each with its own options under its name. Adapters' `list` and `remove` now also get `root`; an adapter may implement `start`.
+- **Preview deployments.** `status`, `observe` and the dashboard show each PR head's live preview (Vercel, Netlify, Cloudflare Pages, Render: anything using GitHub's Deployments API).
+- **`foreman notify`**: Slack, Discord, ntfy (your phone), a webhook, a command or macOS. On by default once a target is added: issues and PRs labeled for people (with their latest comment), a failed base branch, usage-limit stops, Coordinators the watchdog starts and finishes, and a Coordinator it won't restart. Off by default: watchdog merges, failed PR checks, previews. Targets are per machine, kept outside the repo. `observe` and every watchdog round send them, once per event.
+- **`foreman dashboard`**: the crew in a browser, live, read-only, on 127.0.0.1.
+- Playbooks: Builders start and stop dev servers with `foreman env start` / `env remove`; the Coordinator can review visual work on a PR's preview.
+- **Upgrading:** run `npx --no-install foreman init --force` to refresh the playbooks.
+
 ## 0.2.2 (2026-10-26)
 - **The watchdog leaves merges to a Coordinator that's watching.** While a `foreman observe` in any worktree of the repo has finished a round in the last 5 minutes (or 3 of its intervals), the watchdog neither merges approved PRs nor starts a Coordinator: that Coordinator is only waiting on checks, and may be holding an approved PR back on purpose. Before, a Coordinator whose transcript was quiet for 10 minutes (waiting on a slow runner) had its plan-update PR merged ahead of the PRs it described. A usage-limit stop still wins. `foreman status` shows the Observer's last round.
 
