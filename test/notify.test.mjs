@@ -3,7 +3,7 @@
  * `foreman dashboard`, against stand-ins for a webhook and gh.
  */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -171,6 +171,8 @@ test('observe round: checks and previews as events, with what a person may want 
 
 test('dashboard: serves the page, the snapshot and a live feed, read-only and to this machine only', async () => {
 	const config = repo();
+	mkdirSync(join(config.root, '.git/foreman/watchdog'), { recursive: true });
+	writeFileSync(join(config.root, '.git/foreman/watchdog/watchdog.log'), '2026-10-27 09:00  an older round · not news\n');
 	let rounds = 0;
 	const observeRound = async () => (rounds++ === 0 ? [{ kind: 'pr-opened', text: 'baseline: not news' }] : [{ kind: 'checks-passed', text: 'checks: #5 passed', pr: 5 }]);
 	const d = await serve(config, { port: 0, take: async () => ({ repo: 'acme/app', prs: [], n: rounds }), observeRound, intervalSeconds: 0.05 });
@@ -188,7 +190,15 @@ test('dashboard: serves the page, the snapshot and a live feed, read-only and to
 		const reader = res.body.getReader();
 		let text = '';
 		while (!text.includes('checks: #5 passed')) text += new TextDecoder().decode((await reader.read()).value);
-		assert.doesNotMatch(text, /baseline/, 'the first round only sets the baseline');
+		assert.doesNotMatch(text, /baseline|older round/, 'what was there before it started isn\'t news');
+		// The watchdog's log: whole new lines only, read as bytes (a summary with "…" before it mustn't shift them).
+		const log = join(config.root, '.git/foreman/watchdog/watchdog.log');
+		appendFileSync(log, '2026-10-27 10:00  Coordinator ended: merged #5 … waiting on #6\n2026-10-27 10:15  half a li');
+		while (!text.includes('waiting on #6')) text += new TextDecoder().decode((await reader.read()).value);
+		appendFileSync(log, 'ne, now whole\n');
+		while (!text.includes('now whole')) text += new TextDecoder().decode((await reader.read()).value);
+		assert.match(text, /merged #5 … waiting on #6/);
+		assert.match(text, /"half a line, now whole"/);
 		reader.cancel();
 	} finally {
 		await d.close();

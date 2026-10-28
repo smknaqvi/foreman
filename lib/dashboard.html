@@ -169,12 +169,16 @@ function render(s) {
 		...(s.watchdog ? [el('div', { style: 'margin-top: 10px' }, el('div', { class: 'muted small', text: 'Watchdog' }), el('pre', { text: s.watchdog.replace(/^ {2}/gm, '') }))] : []));
 
 	$('env-card').hidden = s.environments === null;
-	if (s.environments !== null) $('envs').replaceChildren(failedPart(s.environments) ? el('div', { class: 'error', text: `couldn't list them: ${s.environments.error}` })
-		: s.environments.length ? el('table', {}, s.environments.map((e) => {
-			const owner = s.builders.find((b) => b.port && b.port === String(e.port));
-			return el('tr', {}, el('td', { class: 'mono', text: `${e.port ? `:${e.port}` : ''}` }), el('td', {}, el('div', { class: 'small', text: e.name }), el('div', { class: 'muted mono', text: e.folder })),
-				el('td', {}, owner ? pill('good', '●', `#${owner.number}`) : e.orphaned ? pill('serious', '⚠', 'orphaned', 'its folder is gone: foreman tick removes it') : pill('', '○', 'unclaimed')));
-		})) : el('div', { class: 'empty', text: 'None running.' }));
+	if (s.environments !== null) {
+		const envs = Array.isArray(s.environments) ? s.environments : s.environments.list ?? [];
+		const errors = failedPart(s.environments) ? [s.environments.error] : s.environments.errors ?? [];
+		$('envs').replaceChildren(...[...errors.map((e) => el('div', { class: 'error small', text: `couldn't list ${e}` })),
+			envs.length ? el('table', {}, envs.map((e) => {
+				const owner = s.builders.find((b) => b.port && b.port === String(e.port));
+				return el('tr', {}, el('td', { class: 'mono', text: `${e.port ? `:${e.port}` : ''}` }), el('td', {}, el('div', { class: 'small', text: e.name }), el('div', { class: 'muted mono', text: e.folder })),
+					el('td', {}, owner ? pill('good', '●', `#${owner.number}`) : e.orphaned ? pill('serious', '⚠', 'orphaned', 'its folder is gone: foreman tick removes it') : pill('', '○', 'unclaimed')));
+			})) : errors.length ? null : el('div', { class: 'empty', text: 'None running.' })].filter(Boolean));
+	}
 }
 
 const KIND = { 'checks-failed': ['critical', '✕'], 'base-failed': ['critical', '✕'], 'checks-passed': ['good', '✓'], 'pr-opened': ['', '+'], 'pr-closed': ['', '−'], preview: ['', '↗'], docker: ['serious', '⚠'], watchdog: ['', '◷'], error: ['critical', '!'] };

@@ -27,6 +27,7 @@ const repo = (config) => {
 	return dir;
 };
 const cli = (cwd, ...args) => execFileSync('node', [join(ROOT, 'bin/foreman.mjs'), ...args], { cwd, encoding: 'utf8', env: { ...process.env, CONDUCTOR_PORT: '' } });
+const quietly = async (fn) => { const log = console.log; console.log = () => {}; try { return await fn(); } finally { console.log = log; } };
 const freePort = () => new Promise((done) => { const s = netServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => done(port)); }); });
 let hasLsof = true;
 try { execFileSync('lsof', ['-v'], { stdio: 'ignore' }); } catch (e) { hasLsof = e.code !== 'ENOENT'; }
@@ -63,6 +64,18 @@ test('a combination: each adapter does its part with its own options, and remove
 	const all = await adapter.remove({ port: 9 });
 	assert.deepEqual([...all], ['a:9'], 'one that fails does not stop the rest');
 	assert.match(all.failed.join(), /b broke/);
+});
+
+test('a combination: one adapter that can\'t list doesn\'t hide the others\' environments', async () => {
+	const dir = repo();
+	writeFileSync(join(dir, 'ok.mjs'), `export default { list() { return [{ name: 'server', port: '1', folder: '' }]; } };`);
+	writeFileSync(join(dir, 'down.mjs'), `export default { list() { throw new Error('NEON_API_KEY isn\\'t set'); } };`);
+	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ env: { adapter: ['./ok.mjs', './down.mjs'] } }));
+	const envs = await (await loadAdapter(loadConfig(dir))).list();
+	assert.deepEqual(envs.map((e) => e.name), ['server']);
+	assert.deepEqual(envs.errors, ["./down.mjs: NEON_API_KEY isn't set"]);
+	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ env: { adapter: ['./down.mjs', './down.mjs'] } }));
+	await assert.rejects((await loadAdapter(loadConfig(dir))).list(), /NEON_API_KEY/, 'all failing still throws');
 });
 
 test('dev-server: workspace records the port, env start runs it with PORT and vars, env remove stops it', { skip: !hasLsof && 'no lsof' }, async () => {
@@ -158,6 +171,32 @@ test('neon: a branch per checkout, its connection string in the env file, delete
 		assert.deepEqual([...(await adapter.remove({ port: 0 }))], [`neon ${s.created[0].name}`]);
 		assert.deepEqual(s.deleted, ['br-1'], 'only this checkout\'s branch');
 		assert.equal(entry(dir).neon, undefined, 'forgotten, so the next setup makes a new one');
+	} finally {
+		delete process.env.NEON_API_KEY;
+	}
+});
+
+test('neon: a deleted checkout\'s branch stays ORPHANED (and is deleted) even after another checkout sets up', async () => {
+	const { s, api } = await fakeNeon();
+	const main = repo({ env: { adapter: 'neon', projectId: 'proj-1', apiUrl: api } });
+	execFileSync('git', ['-C', main, 'add', '-A']);
+	execFileSync('git', ['-C', main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init']); // The worktree gets the config.
+	const gone = join(main, '..', `${main.split('/').pop()}-builder`);
+	execFileSync('git', ['-C', main, 'worktree', 'add', '-q', '--detach', gone]);
+	temps.push(gone);
+	process.env.NEON_API_KEY = 'secret';
+	try {
+		const fromGone = await loadAdapter(loadConfig(gone));
+		await quietly(() => fromGone.setup({ port: 4300 }));
+		rmSync(gone, { recursive: true, force: true }); // A worktree deleted (a Conductor workspace archived, say).
+		const fromMain = await loadAdapter(loadConfig(main));
+		await quietly(() => fromMain.setup({ port: 4301 }));
+		const orphan = (await fromMain.list()).find((e) => e.folder === gone);
+		assert.ok(orphan, 'still linked to its folder, so tick sees it as ORPHANED');
+		await fromMain.remove({ env: orphan });
+		assert.deepEqual(s.deleted, [orphan.branchId]);
+		assert.equal(entry(main, gone), null, 'then forgotten');
+		assert.ok(entry(main).neon, 'the other checkout keeps its own');
 	} finally {
 		delete process.env.NEON_API_KEY;
 	}
