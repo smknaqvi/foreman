@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>foreman</title>
+<style>
+	:root {
+		--page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+		--hair: #e1e0d9; --ring: rgba(11, 11, 11, 0.10); --accent: #2a78d6;
+		--good: #0ca30c; --good-text: #006300; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+		color-scheme: light dark;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+			--hair: #2c2c2a; --ring: rgba(255, 255, 255, 0.10); --accent: #3987e5; --good-text: #0ca30c;
+		}
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+	header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; padding: 18px 24px 8px; }
+	h1 { font-size: 18px; margin: 0; }
+	h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); margin: 0 0 10px; font-weight: 600; }
+	a { color: var(--accent); text-decoration: none; }
+	a:hover { text-decoration: underline; }
+	.muted { color: var(--muted); }
+	.small { font-size: 12px; }
+	.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+	.live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); margin-left: auto; }
+	.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+	.live.on .dot { background: var(--good); }
+	main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 8px 24px 32px; }
+	@media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+	.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+	.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 16px; }
+	.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+	.tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 12px 14px; }
+	.tile .n { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+	.tile .l { color: var(--ink-2); font-size: 12px; }
+	.tile.attention { border-color: var(--critical); }
+	table { width: 100%; border-collapse: collapse; }
+	th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 0 8px 6px 0; border-bottom: 1px solid var(--hair); }
+	td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--hair); vertical-align: top; }
+	tr:last-child td { border-bottom: 0; }
+	.pills { display: flex; flex-wrap: wrap; gap: 4px; }
+	.pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--ring); color: var(--ink); white-space: nowrap; }
+	.pill i { font-style: normal; font-weight: 700; }
+	.pill.good i { color: var(--good); } .pill.warning i { color: var(--warning); } .pill.serious i { color: var(--serious); } .pill.critical i { color: var(--critical); }
+	.pill.critical { border-color: var(--critical); } .pill.ready { border-color: var(--good); }
+	.people li { margin-bottom: 10px; } .people li:last-child { margin-bottom: 0; }
+	ul { list-style: none; margin: 0; padding: 0; }
+	.feed { max-height: 60vh; overflow: auto; }
+	.feed li { padding: 6px 0; border-bottom: 1px solid var(--hair); display: grid; grid-template-columns: 52px 1fr; gap: 8px; }
+	.feed li:last-child { border-bottom: 0; }
+	.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
+	.empty { color: var(--muted); }
+	.error { color: var(--critical); }
+	pre { white-space: pre-wrap; margin: 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<header>
+	<h1 id="repo">foreman</h1>
+	<span id="base" class="pills"></span>
+	<span class="live" id="live" title="Live updates"><span class="dot"></span><span id="updated">connecting…</span></span>
+</header>
+<main>
+	<div class="col">
+		<div class="tiles" id="tiles"></div>
+		<section class="card" id="people-card" hidden><h2>Waiting on you</h2><ul class="people" id="people"></ul></section>
+		<section class="card"><h2>Builders</h2><div id="builders"></div></section>
+		<section class="card"><h2>Other open PRs</h2><div id="others"></div></section>
+		<section class="card"><h2>Merged in the last 24 hours</h2><div id="merged"></div></section>
+	</div>
+	<div class="col">
+		<section class="card"><h2>Live</h2><ul class="feed" id="feed"><li class="empty"><span></span><span>Nothing yet. Rounds run every minute or so.</span></li></ul></section>
+		<section class="card"><h2>Agents</h2><div id="agents"></div></section>
+		<section class="card" id="env-card" hidden><h2>Environments</h2><div id="envs"></div></section>
+	</div>
+</main>
+<script>
+// Read-only: this page only reads /api/state and /api/events. Everything from GitHub is set as text, never HTML.
+const $ = (id) => document.getElementById(id);
+function el(tag, attrs = {}, ...kids) {
+	const e = document.createElement(tag);
+	for (const [k, v] of Object.entries(attrs)) {
+		if (v === undefined || v === null || v === false) continue;
+		if (k === 'text') e.textContent = v; else if (k === 'class') e.className = v; else e.setAttribute(k, v);
+	}
+	for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
+	return e;
+}
+const link = (href, text) => el('a', { href, target: '_blank', rel: 'noopener', text });
+// A status never rides on color alone: every pill has an icon and words.
+const pill = (status, icon, text, title) => el('span', { class: `pill ${status}`, title }, el('i', { text: icon }), text);
+const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const failedPart = (x) => x && !Array.isArray(x) && x.error;
+
+function prPills(p) {
+	const out = [];
+	if (p.failed.length) out.push(pill('critical', '✕', `failed: ${p.failed.join(', ')}`));
+	else if (p.queued.length && p.queued.length === p.running.length) out.push(pill('warning', '◷', 'queued for a runner', p.queued.join(', ')));
+	else if (p.running.length) out.push(pill('warning', '●', 'checks running', p.running.join(', ')));
+	else if (p.checks) out.push(pill('good', '✓', 'checks passed'));
+	else out.push(pill('', '○', 'no checks yet'));
+	if (p.approvedAtHead) out.push(pill('good', '✓', 'approved', p.head));
+	else if (p.approvedBefore) out.push(pill('warning', '↻', 'approved before a push', `approved at ${p.approvedBefore}: fine if the push was only a rebase`));
+	else out.push(pill('', '○', 'not approved'));
+	if (p.ready) out.push(el('span', { class: 'pill ready', title: 'Approved and green: its Builder (or foreman tick) merges it' }, el('i', { text: '→', style: 'color: var(--good)' }), 'ready to merge'));
+	if (p.draft) out.push(pill('', '✎', 'draft'));
+	if (p.conflicts) out.push(pill('critical', '!', 'conflicts'));
+	else if (p.behind) out.push(pill('serious', '↓', 'behind base'));
+	if (p.risky.length) out.push(pill('serious', '⚑', `risky: ${p.risky.slice(0, 2).join(', ')}${p.risky.length > 2 ? '…' : ''}`, p.risky.join('\n')));
+	for (const v of p.previews || []) out.push(el('a', { class: 'pill', href: v.url, target: '_blank', rel: 'noopener', title: v.environment }, el('i', { text: '↗' }), 'preview'));
+	return el('div', { class: 'pills' }, out);
+}
+const prLine = (p) => el('div', {}, link(p.url, `#${p.number}`), ' ', el('span', { text: p.title }), el('div', { class: 'muted mono', text: p.branch }));
+
+function render(s) {
+	if (!s) return;
+	document.title = `foreman · ${s.repo ?? ''}`;
+	$('repo').textContent = s.repo ? `foreman · ${s.repo}` : 'foreman';
+	$('updated').textContent = s.error ? `couldn't read GitHub: ${s.error}` : `updated ${clock(s.generatedAt)}`;
+	if (!s.prs) return;
+
+	$('base').replaceChildren(el('span', { class: 'muted small', text: `${s.base}:` }), ...s.runs.map((r) => r.status !== 'completed'
+		? pill('warning', r.status === 'queued' ? '◷' : '●', r.workflow, `${r.status} · ${r.title}`)
+		: ['success', 'skipped', 'neutral'].includes(r.conclusion) ? pill('good', '✓', r.workflow, r.title) : pill('critical', '✕', `${r.workflow} ${r.conclusion}`, r.title)));
+
+	const people = Array.isArray(s.people) ? s.people : [];
+	const ready = s.prs.filter((p) => p.ready).length;
+	const tile = (n, label, attention) => el('div', { class: `tile${attention ? ' attention' : ''}` }, el('div', { class: 'n', text: n }), el('div', { class: 'l', text: label }));
+	$('tiles').replaceChildren(
+		tile(people.length, 'waiting on you', people.length > 0),
+		tile(s.builders.length, 'issues with a Builder'),
+		tile(s.prs.length, 'open PRs'),
+		tile(ready, 'ready to merge'),
+		tile(s.merged.length, 'merged today'),
+	);
+
+	$('people-card').hidden = !people.length && !failedPart(s.people);
+	$('people').replaceChildren(...(failedPart(s.people) ? [el('li', { class: 'error', text: `couldn't look: ${s.people.error}` })] : people.map((x) => el('li', {},
+		el('div', {}, link(x.url, `#${x.number}`), ' ', el('span', { text: x.title }), ' ', pill('serious', '⚑', x.label)),
+		x.comment ? el('div', { class: 'muted small', text: x.comment.length > 280 ? `${x.comment.slice(0, 280)}…` : x.comment }) : null))));
+
+	const linked = new Set();
+	$('builders').replaceChildren(s.builders.length ? el('table', {},
+		el('tr', {}, el('th', { text: 'Issue' }), el('th', { text: 'PR' })),
+		s.builders.map((b) => {
+			const mine = s.prs.filter((p) => p.closes.includes(b.number));
+			mine.forEach((p) => linked.add(p.number));
+			return el('tr', {},
+				el('td', {}, link(b.url, `#${b.number}`), ' ', el('span', { text: b.title }), el('div', { class: 'muted mono', text: [b.branch, b.port && `port ${b.port}`, b.launchedAt && `since ${ago(Date.parse(b.launchedAt))}`].filter(Boolean).join(' · ') })),
+				el('td', {}, mine.length ? mine.map((p) => el('div', {}, link(p.url, `#${p.number}`), prPills(p))) : el('span', { class: 'muted', text: 'no PR yet' })));
+		})) : el('div', { class: 'empty', text: 'No issue has a Builder.' }));
+
+	const others = s.prs.filter((p) => !linked.has(p.number));
+	$('others').replaceChildren(others.length ? el('table', {}, others.map((p) => el('tr', {}, el('td', {}, prLine(p)), el('td', {}, prPills(p))))) : el('div', { class: 'empty', text: 'None.' }));
+	$('merged').replaceChildren(s.merged.length ? el('ul', {}, s.merged.map((p) => el('li', {}, link(p.url, `#${p.number}`), ' ', el('span', { text: p.title }), el('span', { class: 'muted small', text: ` · ${ago(Date.parse(p.mergedAt))}` })))) : el('div', { class: 'empty', text: 'None.' }));
+
+	const a = s.agents || {};
+	$('agents').replaceChildren(el('div', { class: 'kv' },
+		el('span', { class: 'muted', text: 'Last active' }), el('span', { text: a.lastActiveAt ? ago(a.lastActiveAt) : 'no session in the last week' }),
+		a.limited ? [el('span', { class: 'muted', text: 'Stopped' }), pill('critical', '⏸', `usage limit${a.limited.resetsAt ? `, resets ${clock(a.limited.resetsAt)}` : ''}`, a.limited.text)] : null,
+		el('span', { class: 'muted', text: 'Observer' }), el('span', { text: a.observerAt && Date.now() - a.observerAt < 3600e3 ? `last round ${ago(a.observerAt)}` : 'not running' }),
+		el('span', { class: 'muted', text: 'Notifications' }), el('span', { text: s.notify?.length ? s.notify.join(', ') : 'none (foreman notify add …)' })),
+		...(s.watchdog ? [el('div', { style: 'margin-top: 10px' }, el('div', { class: 'muted small', text: 'Watchdog' }), el('pre', { text: s.watchdog.replace(/^ {2}/gm, '') }))] : []));
+
+	$('env-card').hidden = s.environments === null;
+	if (s.environments !== null) {
+		const envs = Array.isArray(s.environments) ? s.environments : s.environments.list ?? [];
+		const errors = failedPart(s.environments) ? [s.environments.error] : s.environments.errors ?? [];
+		$('envs').replaceChildren(...[...errors.map((e) => el('div', { class: 'error small', text: `couldn't list ${e}` })),
+			envs.length ? el('table', {}, envs.map((e) => {
+				const owner = s.builders.find((b) => b.port && b.port === String(e.port));
+				return el('tr', {}, el('td', { class: 'mono', text: `${e.port ? `:${e.port}` : ''}` }), el('td', {}, el('div', { class: 'small', text: e.name }), el('div', { class: 'muted mono', text: e.folder })),
+					el('td', {}, owner ? pill('good', '●', `#${owner.number}`) : e.orphaned ? pill('serious', '⚠', 'orphaned', 'its folder is gone: foreman tick removes it') : pill('', '○', 'unclaimed')));
+			})) : errors.length ? null : el('div', { class: 'empty', text: 'None running.' })].filter(Boolean));
+	}
+}
+
+const KIND = { 'checks-failed': ['critical', '✕'], 'base-failed': ['critical', '✕'], 'checks-passed': ['good', '✓'], 'pr-opened': ['', '+'], 'pr-closed': ['', '−'], preview: ['', '↗'], docker: ['serious', '⚠'], watchdog: ['', '◷'], error: ['critical', '!'] };
+function addEvent(e, top = true) {
+	const feed = $('feed');
+	feed.querySelector('.empty')?.remove();
+	const [status, icon] = KIND[e.kind] ?? ['', '•'];
+	// The kind is already the line's first words ("checks: …", "PR opened: …"): the pill carries only its icon.
+	const li = el('li', {}, el('span', { class: 'muted small mono', text: clock(e.at) }), el('span', {}, el('span', { class: `pill ${status}`, style: 'margin-right: 6px', title: e.kind }, el('i', { text: icon })), el('span', { class: 'small', text: e.text })));
+	top ? feed.prepend(li) : feed.append(li);
+	while (feed.children.length > 200) feed.lastChild.remove();
+}
+
+fetch('/api/state').then((r) => r.json()).then(render).catch(() => {});
+const source = new EventSource('/api/events');
+source.addEventListener('hello', (m) => { $('live').classList.add('on'); const { events } = JSON.parse(m.data); if (events.length) { $('feed').replaceChildren(); events.forEach((e) => addEvent(e)); } });
+source.addEventListener('event', (m) => addEvent(JSON.parse(m.data)));
+source.addEventListener('state', (m) => render(JSON.parse(m.data)));
+source.onerror = () => { $('live').classList.remove('on'); $('updated').textContent = 'disconnected: is foreman dashboard still running?'; };
+</script>
+</body>
+</html>

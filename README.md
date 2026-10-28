@@ -7,6 +7,8 @@ Run a crew of coding agents on one GitHub repo, in parallel, without anyone merg
 - An **Observer** prints a line whenever something needs the Coordinator's attention.
 - **Guards** make the gated path the only path: a Claude Code hook blocks `gh pr merge`, merge API calls, writes to the base branch and hand-written approvals, and git's pre-push check refuses pushes to the base branch.
 - A **Watchdog** (optional, no AI) notices when every agent has stopped at a usage limit, merges what's approved and green, and starts a new Coordinator once the limit resets.
+- **Notifications** (optional) reach you on Slack, Discord or your phone when something needs a person: an issue labeled for a decision, a red base branch, a usage-limit stop, a Coordinator that finished.
+- A **dashboard** (optional, read-only) shows all of it in a browser, live.
 
 The state lives on GitHub (labels, comments, commit statuses), so a crashed or rate-limited session picks up where it left off: `foreman status` rebuilds the whole picture, and the watchdog does it without waiting for a person.
 
@@ -99,10 +101,13 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `claim <issue> --branch <b> [--port <p>]` / `release <issue>` | Record or drop a Builder on an issue (a label plus a comment `status` reads back) |
 | `approve <PR> <sha>` | Approve the commit you reviewed. Refuses if the PR has moved on since |
 | `merge <PR> [--rebased-from <sha>]` | The only way in. See [How the gate works](#how-the-gate-works) |
-| `observe [--once]` | One line per event: PR opened or closed, checks finished, base CI failed, Docker memory high. Meant for Claude Code's Monitor tool |
+| `observe [--once]` | One line per event: PR opened or closed, checks finished, a preview deployment ready, base CI failed, Docker memory high. Meant for Claude Code's Monitor tool. Also sends [notifications](#notifications) |
+| `dashboard [--port <p>] [--open]` | The crew in a browser, live: what `status` shows plus a feed of what `observe` would print. See [Dashboard](#dashboard) |
 | `tick [--dry-run]` | The steps that need no judgement: rebase approved, green PRs onto the base (clean rebases only) and merge them through `merge`; remove orphaned environments. Never reviews or approves |
 | `watchdog install\|uninstall\|status\|pause\|unpause\|stop\|run` | Keeps the crew going after a usage limit. See [When every agent stops](#when-every-agent-stops) |
+| `env start [--port <p>]` | Start this checkout's dev server in the background on its port and wait until it listens (`dev-server`, `nextjs`, `rails`) |
 | `env remove [--port <p>]` | Remove this checkout's environment, running or stopped, and anything on that port. For CI on a machine that isn't wiped between jobs |
+| `notify add\|remove\|on\|off\|test\|check\|list` | Where notifications go and which events send them. See [Notifications](#notifications) |
 | `workspace [--port <p>]` | Prepare a checkout: switch on the pre-push check, give its environment its port (`$CONDUCTOR_PORT` by default) |
 | `init [--force] [--ci [--self-hosted <labels>]] [--conductor]` | Set a repo up. Writes only what's missing. `--force` replaces foreman's own files but never a playbook you wrote. `--self-hosted`: the check runs on your own runner ([below](#running-the-checks-on-your-own-machine)) |
 | `doctor` | Tools, config, guards (including a live test of each), labels, required check |
@@ -128,7 +133,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `hotspots` | Files several Builders would want. The Coordinator serializes work on them |
 | `playbooks` | Your project's skills or docs that every Builder reads |
 | `maxBuilders` | Builders at once |
-| `env` | The environment adapter and its options (next section) |
+| `env` | The environment adapter (or a list of them) and its options (next section) |
 | `observe` | `intervalSeconds`, `memoryHigh`, `memoryCritical` (%) |
 | `watchdog` | `everyMinutes` (15), `staleMinutes` (0: act only after a usage-limit stop), `maxSessionsPerDay` (6), `dir` (the Coordinator's worktree), `setup`, `command`, `prompt`, `env`. See [When every agent stops](#when-every-agent-stops) |
 
@@ -138,6 +143,31 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 - `none`: Builders only edit, test and push.
 - `wp-env`: WordPress through `@wordpress/env`, one port per checkout.
 - `docker-compose`: one compose project per checkout, with the port set through an env file.
+- `nextjs`: a Next.js dev server per checkout (`next dev --port <port>`).
+- `rails`: a Rails server per checkout (`bin/rails server --port <port>`).
+- `dev-server`: any other dev server: set `command`, e.g. `["npm", "run", "dev", "--", "--port", "{port}"]`.
+- `neon`: a [Neon](https://neon.tech) database branch per checkout, its connection string written to an env file.
+
+The three dev-server adapters work the same way. `foreman workspace --port <p>` records the checkout's port, `foreman env start` runs the server in the background with `PORT` set and waits until it listens, and `foreman env remove` stops it. A server is whatever listens on a port a checkout recorded (found with `lsof`), so one started by hand counts too. Their options:
+- `command`: what starts the server. `{port}` and `{checkout}` (the checkout folder's name) are filled in.
+- `cwd`: the app's folder, for a monorepo.
+- `vars`: more environment variables, e.g. `{ "DATABASE_URL": "postgres://localhost/app_{checkout}" }`, so each checkout has its own database. Rails shares one development database between checkouts unless you set this.
+- `envFile`: also write `PORT` and `vars` to this file. foreman warns if git tracks the file.
+- `startTimeout`: how long `env start` waits for the port to open, in seconds (default 120).
+
+`neon` makes the branch `foreman/<checkout>-<hash>` from `parent` (default: the project's default branch) when `foreman workspace` runs, or reuses it. It writes `DATABASE_URL` (`variable`) to `.env` (`envFile`). The API key comes from `NEON_API_KEY` in the environment, never from the config. Other options: `projectId` (or `NEON_PROJECT_ID`), `database`, `role`, `pooled`, `prefix`. Each branch is recorded with the checkout it serves, so `foreman tick` deletes branches whose checkout is gone. Branches made on another machine are listed but never touched. Neon's free plan has a limited number of branches: `foreman env remove` a Builder's branch when you're done with it.
+
+**Several at once.** `adapter` may be a list. Each adapter does its part in order, with the shared options plus the object under its own name:
+
+```json
+"env": {
+  "adapter": ["nextjs", "neon"],
+  "neon": { "projectId": "late-sky-123456", "envFile": ".env.local" },
+  "nextjs": { "vars": { "NEXTAUTH_URL": "http://localhost:{port}" } }
+}
+```
+
+**Preview deployments** need no adapter. Vercel, Netlify, Cloudflare Pages and Render report to GitHub's Deployments API, so `status`, `observe` and the dashboard show each PR head's live preview URL (production deployments don't count). A Coordinator reviewing visual work can open the preview instead of starting the Builder's environment.
 
 For anything else, write a module and point `env.adapter` at it:
 
@@ -146,7 +176,8 @@ For anything else, write a module and point `env.adapter` at it:
 export default {
   usesDocker: false,                         // true: observe watches Docker memory
   setup({ root, port, options }) { … },      // prepare this checkout to run on `port`
-  list({ options }) { return [{ name, port, folder }]; },  // what's running, and which checkout it serves
+  start({ root, port, options }) { … },      // optional: foreman env start
+  list({ root, options }) { return [{ name, port, folder }]; },  // what's running, and which checkout it serves
   remove({ options, env, root, port }) { … },  // optional: one entry from list(), or this checkout's (and port's)
 };
 ```
@@ -174,9 +205,53 @@ Every `everyMinutes` a round runs. It does nothing while paused, while a Coordin
 - **The newest session stopped at a usage limit** ("You've hit your session limit · resets 1:50am"): it runs `foreman tick` right away (merging needs no AI, so that happens during the limit), and once the limit has reset it starts a Coordinator in the background in its own worktree (`watchdog.dir`, by default beside the main checkout): `claude -p` with a prompt to resume as Coordinator, finish only what's in flight, and run Builders in the foreground so the session lasts.
 - **Nothing for `staleMinutes`:** the same, if you set it (off by default: silence alone usually means a person is away, not that a limit hit).
 
-A Coordinator that hits the limit again just ends, and a later round tries again. One that ends normally isn't restarted until the work in flight changes, and at most `maxSessionsPerDay` start in a day. Its session id is recorded, so `claude --resume <id>` (from its worktree) carries on with it by hand. On macOS each start and finish shows a notification.
+A Coordinator that hits the limit again just ends, and a later round tries again. One that ends normally isn't restarted until the work in flight changes, and at most `maxSessionsPerDay` start in a day. Its session id is recorded, so `claude --resume <id>` (from its worktree) carries on with it by hand. Each start and finish is a [notification](#notifications) (on macOS, a system notification even with none set up).
 
 `foreman status` shows a running watchdog Coordinator; an interactive Coordinator shouldn't start alongside it (`watchdog stop` hands over). `watchdog pause` holds rounds, `uninstall` removes the job. State, log and session output are in `<git common dir>/foreman/watchdog/`.
+
+## Notifications
+
+The Coordinator reports to you when you're at the screen. When you're not, `foreman notify` tells you what needs a person:
+
+```sh
+npx --no-install foreman notify add ntfy my-crew-7f3k          # your phone, through the ntfy app (pick an unguessable topic)
+npx --no-install foreman notify add slack '$SLACK_WEBHOOK_URL' # read from the environment when sending (quote the $)
+npx --no-install foreman notify add discord https://discord.com/api/webhooks/…
+npx --no-install foreman notify add webhook https://example.com/hook       # JSON: kind, repo, title, text, url, urgent, at
+npx --no-install foreman notify add command -- terminal-notifier -title {title} -message {text} -open {url}
+npx --no-install foreman notify test                           # sends a test to each
+npx --no-install foreman notify                                # targets, and which events are on
+```
+
+| Event | Default | When |
+|---|---|---|
+| `needs-people` | on | An open issue or PR has `labels.decision` or `labels.needsInput`. The notification includes its latest comment, which is usually what the Builder needs. Removing the label and adding it again sends again |
+| `base-failed` | on | A push run on the base branch failed |
+| `limit` | on | The newest agent session stopped at a usage limit with work in flight (with when it resets) |
+| `coordinator` | on | The watchdog started a Coordinator, or one ended (with its summary: what merged, what waits on whom) |
+| `held` | on | The watchdog won't start another Coordinator: the last ended with the same work in flight, or `maxSessionsPerDay` |
+| `merged` | off | The watchdog merged an approved PR |
+| `checks-failed` | off | A PR's checks failed |
+| `preview` | off | A PR's preview deployment is ready |
+
+`notify on|off <event>` changes these. `foreman observe` sends events while a Coordinator watches. The watchdog checks every round, even when it has nothing else to do, so with the watchdog installed a labeled issue reaches you within `everyMinutes`. Without it, run `notify check` from cron. Every event has a key, and only the first process to claim it sends it, so the Observer and the watchdog never both send one.
+
+Targets belong to your machine, not the repo: they're kept in `<git common dir>/foreman/notify.json`, never committed, because webhook URLs are secrets. With no targets, macOS still shows the watchdog's Coordinator notifications, as before. `FOREMAN_NO_NOTIFY=1` silences everything.
+
+## Dashboard
+
+```sh
+npx --no-install foreman dashboard --open     # http://127.0.0.1:4477
+```
+
+One page with:
+- what needs you (labeled issues with their latest comment),
+- each Builder's issue and PR (checks, approval, ready to merge, risky files, preview link),
+- other open PRs and recent merges,
+- the base branch's CI, the agents and watchdog, and local environments (orphans marked),
+- a live feed of what `foreman observe` would print, plus the watchdog's rounds.
+
+It's **read-only** on purpose: approving means reviewing, which is the Coordinator's job, so nothing on the page approves, merges, claims or starts anything. It listens on 127.0.0.1 only and refuses requests whose `Host` isn't this machine. Its observer state lives in memory, so it doesn't change what the Coordinator's `foreman observe` reports, and the watchdog doesn't take it for a Coordinator watching.
 
 ## How the gate works
 
@@ -257,5 +332,6 @@ While the runner is offline, runs wait as **queued** and start when it's back: t
 foreman runs on itself. `main` is protected: pull requests only, and all four test jobs must be green. PRs merge through `node bin/foreman.mjs approve` and `merge` (see `foreman.config.json`). Then a release is tagged on `main` and added to the changelog.
 
 ```sh
-npm test    # the guard's command cases, the merge gate against real git repos and a fake gh, init, config, adapters
+npm test    # the guard's command cases, the merge gate against real git repos and a fake gh, init, config, adapters,
+            # notifications, observe rounds and the dashboard
 ```

@@ -32,7 +32,7 @@ npx --no-install foreman claim <N> --branch <prefix>/issue-<N>-<slug> --port <po
 
 Then use the Agent tool, one per issue: `isolation: "worktree"`, `run_in_background: true`, a **unique port** each. In Conductor, take ports from your workspace's range (`$CONDUCTOR_PORT`+1 … +9); your own environment uses `$CONDUCTOR_PORT`. The prompt must be self-contained:
 - read AGENTS.md, the `work-an-issue` skill and every playbook in `foreman.config.json`; then `gh issue view N`
-- `git checkout -b <branch>`, `npm install`, `npx --no-install foreman workspace --port <port>`, then start its environment as the playbooks say
+- `git checkout -b <branch>`, `npm install`, `npx --no-install foreman workspace --port <port>`, then start its environment as the playbooks say (`npx --no-install foreman env start` with the dev-server, nextjs and rails adapters)
 - never touch other environments or containers
 - its lane (the files it owns) and the hotspot rule
 - the deliverable: a PR with `Closes #N`, a "Plan updates" section, green checks, and (for visual work) comparison image paths in its final report
@@ -43,7 +43,7 @@ For a wave, start the **Observer**: run `npx --no-install foreman observe` with 
 ## 3. Review each PR as it arrives
 1. Look at what the Builder reports (screenshots, test output). Does it really do what the issue asks?
 2. `gh pr checks <N>` must be green.
-3. Note the head first (`sha=$(gh pr view <N> --json headRefOid --jq .headRefOid)`), then review the PR (e.g. `/code-review medium <N>`).
+3. Note the head first (`sha=$(gh pr view <N> --json headRefOid --jq .headRefOid)`), then review the PR (e.g. `/code-review medium <N>`). For visual work, a preview deployment of the head (shown by `foreman status`) saves starting the Builder's environment.
 4. **Check it against the issue,** not just for bugs: every checklist item and "Done when", and nothing outside its lane. Read the diff as a skeptic.
 5. **Risky PRs get more** (`npx --no-install foreman status` marks them RISKY: `riskyPaths`, plus CI, Claude settings, git hooks, the config and the dependency files, which pin foreman itself). Review at a higher level and get a second opinion from a fresh Agent on a different model: "Does PR #<N> do what issue #<M> asks, and only that? What could it break?"
 6. Findings: SendMessage the Builder specific fixes, then re-review after it pushes.

@@ -16,6 +16,7 @@ Coordinator
   release <issue>                         un-mark an abandoned issue
   approve <PR> <reviewed sha>             approve exactly the commit you reviewed
   observe [--once]                        print a line whenever something needs attention (run under Monitor)
+  dashboard [--port <p>] [--open]         the crew in a browser, live (read-only; 127.0.0.1:4477)
   tick [--dry-run]                        what needs no judgement: merge approved, green PRs (clean rebases
                                           only) and remove orphaned environments
 
@@ -27,8 +28,19 @@ When every agent stops (a usage limit)
   watchdog pause|unpause|stop             hold it; stop the Coordinator it started
   watchdog run [--dry-run]                one round (what launchd runs)
 
+Telling a person (Slack, Discord, ntfy on a phone, a webhook, a command, macOS)
+  notify [list]                           targets and which events are on
+  notify add slack|discord|webhook <url or $VAR>
+  notify add ntfy <topic> [--server <url>] [--token <t or $VAR>]
+  notify add macos | notify add command -- <program> [args…]   ({title} {text} {url} {kind} filled in)
+  notify remove <n> | notify on|off <event…> | notify test
+  notify check                            look for issues waiting on people now (observe and the watchdog
+                                          do this on their own)
+
 Builders
   workspace [--port <p>]                  prepare this checkout (pre-push check, its own environment port)
+  env start [--port <p>]                  start this checkout's dev server in the background (dev-server,
+                                          nextjs, rails adapters) and wait until it listens
   env remove [--port <p>]                 remove this checkout's environment (running or stopped) and anything
                                           on that port, e.g. before and after a CI job
   merge <PR> [--rebased-from <sha>]       merge an approved PR: refuses unless it's exactly what was approved,
@@ -88,10 +100,20 @@ async function main() {
 				default: throw new Error(`unknown watchdog command "${positionals[0]}" (install, uninstall, status, pause, unpause, stop, run)`);
 			}
 		}
+		case 'notify': {
+			const { values, positionals } = flags({ server: { type: 'string' }, token: { type: 'string' } });
+			return (await import('../lib/notify.mjs')).command(loadConfig(), positionals, values);
+		}
+		case 'dashboard': {
+			const { values } = flags({ port: { type: 'string' }, open: { type: 'boolean' } });
+			return (await import('../lib/dashboard.mjs')).dashboard(loadConfig(), { port: values.port, open: values.open });
+		}
 		case 'env': {
 			const { values, positionals } = flags({ port: { type: 'string' } });
-			if (positionals[0] !== 'remove') throw new Error('usage: foreman env remove [--port <port>]');
-			return (await import('../lib/crew.mjs')).removeEnv(loadConfig(), values);
+			const crew = await import('../lib/crew.mjs');
+			if (positionals[0] === 'start') return crew.startEnv(loadConfig(), values);
+			if (positionals[0] === 'remove') return crew.removeEnv(loadConfig(), values);
+			throw new Error('usage: foreman env start|remove [--port <port>]');
 		}
 		case 'claim': {
 			const { values, positionals } = flags({ branch: { type: 'string' }, port: { type: 'string' } });
