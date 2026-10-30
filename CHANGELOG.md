@@ -4,7 +4,7 @@ Versions are git tags (`v*`). They're permanent: a ruleset stops them being move
 
 ## Unreleased
 - **Antigravity.** `foreman init --agents antigravity` wires the merge guard into its `.agents/hooks.json` (its `run_command` tool; Antigravity's CLI, IDE and app) and links every playbook into `.agents/skills/`, where it looks for skills. The guard answers it `allow` for fine commands (its hooks must answer; that leaves the call to its own approval rules) and `deny` with the reason otherwise.
-- **`foreman auto-approve [--merge] [--dry-run]`: routine updates without a Coordinator.** Rules in the new `autoApprove` config (a branch pattern, and for each file a PR may touch, a pattern every changed line must match) approve PRs narrow enough to check mechanically, such as version bumps, once their required check passed; `--merge` merges them through the gate (rebasing cleanly if behind). Anything outside a rule is left open with the reason. Meant for CI. See the README.
+- **`foreman auto-approve [--merge] [--dry-run]`: routine updates without a Coordinator.** Rules in the new `autoApprove` config (a branch pattern, and for each file a PR may touch, a pattern every changed line must match) approve PRs narrow enough to check mechanically, such as version bumps (`versionsOnly`: each changed line may differ only in its numbers), once their required check passed; `--merge` merges them through the gate (rebasing cleanly if behind). Anything outside a rule is left open with the reason. Meant for CI. See the README.
 
 ## 0.3.0 (2026-11-24)
 - **Any coding agent, not only Claude Code.**
