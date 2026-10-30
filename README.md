@@ -307,6 +307,7 @@ Some PRs are so narrow that a rule can check them as well as a review would: a b
 "autoApprove": [{
   "name": "WordPress and plugin version updates",
   "branch": "^plugin-updates/",
+  "versionsOnly": true,
   "files": {
     ".wp-env.json": "^\\s*(\"core\": )?\"https://(downloads\\.)?wordpress\\.org/[\\w./-]+\\.zip\",?$",
     "docker-compose.yml": "^\\s*image: wordpress:[\\w.-]+$"
@@ -314,7 +315,7 @@ Some PRs are so narrow that a rule can check them as well as a review would: a b
 }]
 ```
 
-A PR is approved only if its branch matches, it isn't from a fork or a draft, every file it changes is listed (and edited, not added, deleted or binary), every line it adds or removes matches that file's pattern, and `requiredCheck` passed on its head. Anything else is left open, with the reason printed. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind). Keep the patterns tight: they are the review.
+A PR is approved only if its branch matches, it isn't from a fork or a draft, every file it changes is listed (and edited, not added, deleted or binary), every line it adds or removes matches that file's pattern (and, with `versionsOnly`, differs from the line it replaces only in its numbers, so a name can't be swapped), and `requiredCheck` passed on its head. Anything else is left open, with the reason printed. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind). Keep the patterns tight: they are the review.
 
 Run it from CI once the PR's check finishes, e.g. a workflow on `workflow_run` of the check for those branches, checking out the base branch (never the PR's code) and running `npx --no-install foreman auto-approve --merge`. A merge made with a workflow's `GITHUB_TOKEN` starts no workflows, so if a deploy follows the base branch's checks, have that job start them (`gh workflow run <check>.yml --ref main`).
 

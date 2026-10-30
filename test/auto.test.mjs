@@ -36,6 +36,14 @@ test('checkChange: only listed files, only edited, every changed line matching i
 	assert.match(checkChange(RULE, { files: [file('constructor', ['+x'])] }), /doesn't cover/, 'no inherited keys');
 });
 
+test('checkChange with versionsOnly: a line may only change its numbers', () => {
+	const strict = { ...RULE, versionsOnly: true };
+	assert.equal(checkChange(strict, { files: [file('versions.json', ['-  "left-pad": "1.2.0",', '+  "left-pad": "1.10.3",'])] }), '');
+	assert.match(checkChange(strict, { files: [file('versions.json', ['-  "left-pad": "1.2.0",', '+  "evil-pad": "1.2.1",'])] }), /more than version numbers/, 'a swapped name');
+	assert.match(checkChange(strict, { files: [file('versions.json', ['+  "extra": "1.0.0",'])] }), /more than version numbers/, 'a line only added');
+	assert.equal(checkChange(RULE, { files: [file('versions.json', ['-  "left-pad": "1.2.0",', '+  "evil-pad": "1.2.1",'])] }), '', 'without it, the line pattern alone decides');
+});
+
 test('config: autoApprove rules are checked', () => {
 	const dir = temp('foreman-config-');
 	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ autoApprove: [{ name: '', branch: '(', files: {} }] }));
