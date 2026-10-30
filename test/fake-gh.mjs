@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * A stand-in for the GitHub CLI, for test/merge.test.mjs. It answers exactly the calls scripts/merge.sh
+ * A stand-in for the GitHub CLI, for test/merge.test.mjs, test/watchdog.test.mjs and test/auto.test.mjs. It answers exactly the calls scripts/merge.sh
  * makes, from a JSON state file ($FAKE_GH_STATE) the test controls, and records approvals and merges there.
  *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], verify: { sha: conclusion },
  *     failed: { sha: "names" }, checksPass, merged, origin? }
@@ -19,7 +19,9 @@ const save = () => writeFileSync(file, JSON.stringify(s));
 const out = (x) => process.stdout.write(`${x}\n`);
 const [a, b] = args;
 
-if (a === 'repo' && b === 'view') out(s.repo);
+const jq = args.includes('--jq');
+if (a === 'repo' && b === 'view') out(jq ? s.repo : JSON.stringify({ nameWithOwner: s.repo }));
+else if (a === 'pr' && b === 'list') out(JSON.stringify([{ number: s.pr.number ?? 7, headRefName: s.pr.branch, headRefOid: s.pr.head, isCrossRepository: false, isDraft: s.pr.isDraft, baseRefName: 'main' }]));
 else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
 	let m;
@@ -27,7 +29,8 @@ else if (a === 'api') {
 	else if ((m = ep.match(/\/statuses\/(\w+)$/))) { s.approved.push(m[1]); save(); }
 	else if ((m = ep.match(/commits\/(\w+)\/check-runs$/)) && args.includes('-f')) {
 		const name = args[args.indexOf('-f') + 1].replace(/^check_name=/, '');
-		out(name === (s.checkName ?? 'verify') ? s.verify[m[1]] ?? '' : '');
+		const conclusion = name === (s.checkName ?? 'verify') ? s.verify[m[1]] ?? '' : '';
+		out(jq ? conclusion : JSON.stringify({ check_runs: conclusion ? [{ status: 'completed', conclusion }] : [] }));
 	} else if ((m = ep.match(/commits\/(\w+)\/check-runs$/))) { if (s.failed[m[1]]) out(s.failed[m[1]].split(', ').join('\n')); }
 	else { process.stderr.write(`fake gh: unexpected api call ${ep}\n`); process.exit(2); }
 } else if (a === 'pr' && b === 'view') {
