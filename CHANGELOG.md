@@ -2,7 +2,8 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
-## Unreleased
+## 0.3.0 (2026-10-30)
+- **`foreman auto-approve [--merge] [--dry-run]`: routine updates without a Coordinator.** Rules in the new `autoApprove` config (a branch pattern, and for each file a PR may touch, a pattern every changed line must match) approve PRs narrow enough to check mechanically, such as version bumps (`versionsOnly`: each changed line may differ only in its numbers), once their required check passed; `--merge` merges them through the gate (rebasing cleanly if behind). Anything outside a rule is left open with the reason. Meant for CI. See the README.
 - **More environment adapters.**
   - `nextjs`, `rails` and `dev-server` (any command): a dev server per checkout on its own port. `foreman workspace --port` records the port, the new **`foreman env start`** runs the server in the background with `PORT` (and `vars`, e.g. a per-checkout `DATABASE_URL`) set and waits until it listens, and `foreman env remove` stops it. Running servers are found with `lsof` on the recorded ports, so ones started by hand count too.
   - `neon`: a Neon database branch per checkout, its connection string written to an env file. `foreman tick` deletes branches whose checkout is gone. Needs `NEON_API_KEY`.

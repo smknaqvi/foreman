@@ -19,6 +19,9 @@ Coordinator
   dashboard [--port <p>] [--open]         the crew in a browser, live (read-only; 127.0.0.1:4477)
   tick [--dry-run]                        what needs no judgement: merge approved, green PRs (clean rebases
                                           only) and remove orphaned environments
+  auto-approve [--merge] [--dry-run]      approve open PRs an autoApprove rule covers (e.g. version pins
+                                          only) once their required check passed; --merge also merges them
+                                          (for CI: no Coordinator needed)
 
 When every agent stops (a usage limit)
   watchdog install|uninstall              run a round every few minutes (launchd on macOS; prints a cron line
@@ -82,6 +85,10 @@ async function main() {
 			const { values } = flags({ 'dry-run': { type: 'boolean' } });
 			await (await import('../lib/tick.mjs')).tick(loadConfig(), { dryRun: values['dry-run'] });
 			return 0;
+		}
+		case 'auto-approve': {
+			const { values } = flags({ merge: { type: 'boolean' }, 'dry-run': { type: 'boolean' } });
+			return (await import('../lib/auto.mjs')).autoApprove(loadConfig(), { merge: values.merge, dryRun: values['dry-run'] });
 		}
 		case 'watchdog': {
 			const { values, positionals } = flags({ 'dry-run': { type: 'boolean' }, launch: { type: 'boolean' } });

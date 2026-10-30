@@ -103,6 +103,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `merge <PR> [--rebased-from <sha>]` | The only way in. See [How the gate works](#how-the-gate-works) |
 | `observe [--once]` | One line per event: PR opened or closed, checks finished, a preview deployment ready, base CI failed, Docker memory high. Meant for Claude Code's Monitor tool. Also sends [notifications](#notifications) |
 | `dashboard [--port <p>] [--open]` | The crew in a browser, live: what `status` shows plus a feed of what `observe` would print. See [Dashboard](#dashboard) |
+| `auto-approve [--merge] [--dry-run]` | Approve, without a Coordinator, open PRs an `autoApprove` rule covers (e.g. version pins only) once their required check passed; `--merge` also merges them like `tick`. For CI. See [Approving routine updates without a Coordinator](#approving-routine-updates-without-a-coordinator) |
 | `tick [--dry-run]` | The steps that need no judgement: rebase approved, green PRs onto the base (clean rebases only) and merge them through `merge`; remove orphaned environments. Never reviews or approves |
 | `watchdog install\|uninstall\|status\|pause\|unpause\|stop\|run` | Keeps the crew going after a usage limit. See [When every agent stops](#when-every-agent-stops) |
 | `env start [--port <p>]` | Start this checkout's dev server in the background on its port and wait until it listens (`dev-server`, `nextjs`, `rails`) |
@@ -135,6 +136,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `maxBuilders` | Builders at once |
 | `env` | The environment adapter (or a list of them) and its options (next section) |
 | `observe` | `intervalSeconds`, `memoryHigh`, `memoryCritical` (%) |
+| `autoApprove` | Rules for PRs approved without a Coordinator (none by default). See [below](#approving-routine-updates-without-a-coordinator) |
 | `watchdog` | `everyMinutes` (15), `staleMinutes` (0: act only after a usage-limit stop), `maxSessionsPerDay` (6), `dir` (the Coordinator's worktree), `setup`, `command`, `prompt`, `env`. See [When every agent stops](#when-every-agent-stops) |
 
 ## Extending
@@ -296,6 +298,26 @@ flowchart TD
 ```
 
 </details>
+
+## Approving routine updates without a Coordinator
+
+Some PRs are so narrow that a rule can check them as well as a review would: a bot bumping version numbers, say. List them under `autoApprove`, and `foreman auto-approve` approves them with no agent involved:
+
+```json
+"autoApprove": [{
+  "name": "WordPress and plugin version updates",
+  "branch": "^plugin-updates/",
+  "versionsOnly": true,
+  "files": {
+    ".wp-env.json": "^\\s*(\"core\": )?\"https://(downloads\\.)?wordpress\\.org/[\\w./-]+\\.zip\",?$",
+    "docker-compose.yml": "^\\s*image: wordpress:[\\w.-]+$"
+  }
+}]
+```
+
+A PR is approved only if its branch matches, it isn't from a fork or a draft, every file it changes is listed (and edited, not added, deleted or binary), every line it adds or removes matches that file's pattern (and, with `versionsOnly`, differs from the line it replaces only in its numbers, so a name can't be swapped), and `requiredCheck` passed on its head. Anything else is left open, with the reason printed. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind). Keep the patterns tight: they are the review.
+
+Run it from CI once the PR's check finishes, e.g. a workflow on `workflow_run` of the check for those branches, checking out the base branch (never the PR's code) and running `npx --no-install foreman auto-approve --merge`. A merge made with a workflow's `GITHUB_TOKEN` starts no workflows, so if a deploy follows the base branch's checks, have that job start them (`gh workflow run <check>.yml --ref main`).
 
 ## Running the checks on your own machine
 
