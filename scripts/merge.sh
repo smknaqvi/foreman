@@ -22,6 +22,9 @@ required="${FOREMAN_REQUIRED_CHECK-verify}"
 stale_paths="${FOREMAN_STALE_PATHS:-}" # One per line.
 docs_only="${FOREMAN_DOCS_ONLY-\.md$}" # Empty: no PR counts as docs-only.
 lock_wait="${FOREMAN_LOCK_WAIT:-60}" # Tries, 5 seconds apart.
+passing="${FOREMAN_PASSING:-success skipped neutral}" # Conclusions that pass (lib/config.mjs PASSING).
+passing_jq="IN($(printf '"%s",' $passing | sed 's/,$//'))" # The same, for jq.
+is_passing() { case " $passing " in *" $1 "*) [ -n "$1" ] ;; *) return 1 ;; esac; }
 
 # Does every file changed between $1 and $2 match $docs_only? (Then no check is waited for.)
 docs_only_change() {
@@ -127,13 +130,13 @@ fi
 if [ -n "$checked" ] && [ -n "$required" ]; then
 	# -X GET -f encodes the name into the query, so names with spaces or & work ("Build & Test").
 	result=$(gh api -X GET "repos/$repo/commits/$checked/check-runs" -f check_name="$required" --jq '[.check_runs[] | select(.status=="completed")] | first | .conclusion // ""')
-	if [ "$result" != "success" ]; then
+	if ! is_passing "$result"; then
 		echo "PR #$pr: the $required check hasn't passed on ${checked:0:7} yet (${result:-not finished}). Wait with: gh pr checks $pr --watch" >&2
 		exit 1
 	fi
 fi
 if [ "$checked" != "$head" ]; then # Not waiting on the head's checks, but never ignore one that already failed.
-	failed=$(gh api --paginate "repos/$repo/commits/$head/check-runs" --jq '.check_runs[] | select(.status=="completed" and (.conclusion | IN("success","skipped","neutral") | not)) | .name' | paste -sd ',' - | sed 's/,/, /g')
+	failed=$(gh api --paginate "repos/$repo/commits/$head/check-runs" --jq ".check_runs[] | select(.status==\"completed\" and (.conclusion | $passing_jq | not)) | .name" | paste -sd ',' - | sed 's/,/, /g')
 	[ -z "$failed" ] || { echo "PR #$pr: checks failed on ${head:0:7}: $failed" >&2; exit 1; }
 fi
 if [ "$checked" = "$head" ] && ! gh pr checks "$pr" >/dev/null 2>&1; then

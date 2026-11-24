@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { autoApprove, checkAuthors, checkChange, compareVersions, parseDiff } from '../lib/auto.mjs';
 import { DEFAULTS, loadConfig } from '../lib/config.mjs';
-import { commitGreen, readCrew, rollupChecks } from '../lib/state.mjs';
+import { commitGreen, forgetWorkflows, readCrew, rollupChecks } from '../lib/state.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const temps = [];
@@ -84,6 +84,8 @@ test('checkChange with versionsOnly: a line may only change its versions, and on
 	assert.equal(line('"https://downloads.wordpress.org/plugin/the-events-calendar.6.18.3.zip",', '"https://downloads.wordpress.org/plugin/the-events-calendar.6.18.4.1.zip",'), '');
 	assert.equal(line('uses: actions/checkout@v4', 'uses: actions/checkout@v5'), '', 'a lone v');
 	assert.match(line('ubuntu 22.04abc', 'ubuntu 22.05abc'), /more than version numbers/, "a run isn't cut short to fit");
+	assert.match(line('"retries": -1,', '"retries": -5,'), /more than version numbers/, 'a negative number is no version');
+	assert.equal(line('pkg-1.2.0', 'pkg-1.3.0'), '', 'but a dash after a name joins one');
 	// Two versions on one line: each that changed must go up.
 	const two = (to) => checkChange({ ...strict, files: { 'a.txt': '.*' } }, { files: [file('a.txt', ['-core 7.1 plugin 6.18', `+core ${to}`])] });
 	assert.equal(two('7.2 plugin 6.18'), '');
@@ -300,7 +302,7 @@ test('auto-approve: a submodule (gitlink) change is refused, even in a covered f
 });
 
 test('auto-approve --merge: a rebased head that then fails to merge is reported, its checks started, and the run fails', async () => {
-	const t = repo({ gh: { mergeFails: true, workflows: [{ name: 'Verify', path: '.github/workflows/verify.yml' }] } });
+	const t = repo({ runs: [{ workflowName: 'Verify', event: 'push', status: 'completed', conclusion: 'success', databaseId: 1 }], gh: { mergeFails: true, workflows: [{ name: 'Verify', path: '.github/workflows/verify.yml' }] } });
 	const said = [];
 	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 1, said.join('\n'));
 	assert.notEqual(t.branchOnOrigin(), t.pr, 'it was rebased and pushed');
@@ -314,25 +316,106 @@ test('auto-approve --merge: a rebased head that then fails to merge is reported,
 	assert.match(heard.join('\n'), /re-run verify on it or run foreman tick/);
 });
 
-test('auto-approve: a later run says the same of a head with no checks whose previous head it approved', async () => {
-	const before = (description) => [{ beforeCommit: { oid: 'a'.repeat(40), statusCheckRollup: { state: 'SUCCESS' }, status: { contexts: [{ context: 'coordinator-review', state: 'SUCCESS', description }] } } }];
-	const t = repo({ verify: '', gh: { forcePushes: before('Auto-approved: version pins') } });
+test('auto-approve: a head with no checks that replaced one it approved: its own rebase is reported, new content just waits', async () => {
+	const approvedAt = (sha, description = 'Auto-approved: version pins') => [{ beforeCommit: { oid: sha, statusCheckRollup: { state: 'SUCCESS' }, status: { contexts: [{ context: 'coordinator-review', state: 'SUCCESS', description }] } } }];
+	const VERIFY = [{ name: 'Verify' }];
+	// Push a new head to the PR's branch, as a rebase from CI (or the bot) would: the fake follows the branch.
+	const push = (t, make) => {
+		t.git('checkout', '-q', '--detach', t.pr);
+		make();
+		t.git('push', '-q', '-f', 'origin', 'HEAD:refs/heads/deps/2026-10-30', '+HEAD:refs/pull/7/head');
+		t.git('checkout', '-q', 'main');
+	};
+	const rebase = (t) => push(t, () => t.git('rebase', '-q', 'main'));
+	const repush = (t) => push(t, () => { writeFileSync(join(t.work, 'versions.json'), '{\n  "left-pad": "1.4.0"\n}\n'); t.git('commit', '-q', '-am', 'newer'); });
+
+	// Our rebase that never merged: reported, its checks started (again, each run), and the run fails.
+	const t = repo({ verify: '', gh: (sha) => ({ forcePushes: approvedAt(sha), workflows: VERIFY }) });
+	rebase(t);
 	const said = [];
-	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 1);
-	assert.match(said.join('\n'), /Couldn't start the checks on PR #7's new head: no workflow is named like verify/);
-	assert.match(said.join('\n'), /Rebased PR #7 but couldn't merge it: its new head has no checks; re-run verify on it or run foreman tick/);
+	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 1, said.join('\n'));
+	assert.match(said.join('\n'), /Rebased PR #7 but couldn't merge it: its new head has no checks; started Verify on it/);
+	assert.deepEqual(t.state().dispatched, ['Verify --ref deps/2026-10-30']);
+	// merge.sh's carried-over approval counts as ours too; no workflow to start: says why.
+	const c = repo({ verify: '', gh: (sha) => ({ forcePushes: approvedAt(sha, 'Approval carried over: clean rebase of abc1234') }) });
+	rebase(c);
+	const c1 = [];
+	assert.equal(await autoApprove(c.config, { merge: true, log: (m) => c1.push(m) }), 1);
+	assert.match(c1.join('\n'), /Couldn't start the checks on PR #7's new head: no workflow is named like verify/);
+	assert.match(c1.join('\n'), /re-run verify on it or run foreman tick/);
 
-	// Each later run tries starting them again (once), then says so.
-	const r = repo({ verify: '', gh: { forcePushes: before('Auto-approved: version pins'), workflows: [{ name: 'Verify' }] } });
-	const r1 = [];
-	assert.equal(await autoApprove(r.config, { merge: true, log: (m) => r1.push(m) }), 1);
-	assert.match(r1.join('\n'), /its new head has no checks; started Verify on it/);
-	assert.deepEqual(r.state().dispatched, ['Verify --ref deps/2026-10-30']);
+	// The bot pushed new content: a new head waiting for checks. Started once, no "Rebased", no failure.
+	const n = repo({ verify: '', gh: (sha) => ({ forcePushes: approvedAt(sha), workflows: VERIFY }) });
+	repush(n);
+	const n1 = [];
+	assert.equal(await autoApprove(n.config, { merge: true, log: (m) => n1.push(m) }), 0, n1.join('\n'));
+	assert.doesNotMatch(n1.join('\n'), /Rebased/);
+	assert.match(n1.join('\n'), /its new head has no checks yet; started Verify on it/);
+	assert.deepEqual(n.state().dispatched, ['Verify --ref deps/2026-10-30']);
+	// ...but not when a run for that head is already queued or under way.
+	const d = repo({ verify: '', gh: (sha) => ({ forcePushes: approvedAt(sha), workflows: VERIFY }) });
+	repush(d);
+	const st = d.state();
+	st.runs = [{ workflowName: 'Verify', event: 'workflow_dispatch', status: 'queued', conclusion: '', headSha: d.branchOnOrigin(), databaseId: 3 }];
+	writeFileSync(process.env.FAKE_GH_STATE, JSON.stringify(st));
+	const d1 = [];
+	assert.equal(await autoApprove(d.config, { merge: true, log: (m) => d1.push(m) }), 0);
+	assert.match(d1.join('\n'), /a run for it is already queued or under way/);
+	assert.equal(d.state().dispatched, undefined);
 
-	const u = repo({ verify: '', gh: { forcePushes: before('Approved by the Coordinator') } }); // Someone else's approval: the usual reason.
+	const u = repo({ verify: '', gh: (sha) => ({ forcePushes: approvedAt(sha, 'Approved by the Coordinator') }) }); // Someone else's approval: the usual reason.
 	const heard = [];
 	assert.equal(await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) }), 0);
 	assert.match(heard.join('\n'), /not auto-approved: verify hasn't passed/);
+});
+
+test("auto-approve --merge: holds while the base's state is unknown: no run of its check in view, or no workflow list", async () => {
+	const VERIFY = { workflows: [{ name: 'Verify' }] };
+	// Its check's newest run is far down the base's run list, behind a busier workflow: still found, still red.
+	const busy = Array.from({ length: 40 }, (_, i) => ({ workflowName: 'Auto-approve', event: 'schedule', status: 'completed', conclusion: 'success', databaseId: 100 + i }));
+	const t = repo({ gh: VERIFY, runs: [...busy, { workflowName: 'Verify', event: 'push', status: 'completed', conclusion: 'failure', databaseId: 1 }] });
+	const said = [];
+	await autoApprove(t.config, { merge: true, log: (m) => said.push(m) });
+	assert.match(said.join('\n'), /Not merging it yet: main's CI is failing \(Verify\)/);
+	assert.equal(t.state().merged, false);
+
+	const u = repo({ gh: VERIFY, runs: busy });
+	const heard = [];
+	await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) });
+	assert.match(heard.join('\n'), /Not merging it yet: main's CI is unknown: Verify has no push or hand-started run on main yet/);
+	assert.equal(u.state().merged, false);
+
+	const v = repo({ gh: { workflowsFail: true } });
+	const v1 = [];
+	await autoApprove(v.config, { merge: true, log: (m) => v1.push(m) });
+	assert.match(v1.join('\n'), /Not merging it yet: main's CI can't be told: couldn't list the repo's workflows \(HTTP 502: Bad Gateway\)/);
+	assert.equal(v.state().merged, false);
+	assert.ok(v.state().approved.includes(v.pr), 'still approved');
+});
+
+test('readCrew: a skipped required check counts as passed (a docs-only change, say), as in foreman merge', async () => {
+	const dir = temp('foreman-crew-');
+	const prs = [{ number: 3, headRefOid: 'c'.repeat(40), mergeable: 'MERGEABLE', isDraft: false, statusCheckRollup: [
+		{ __typename: 'StatusContext', context: 'coordinator-review', state: 'SUCCESS' },
+		{ __typename: 'CheckRun', name: 'verify', workflowName: 'Verify', status: 'COMPLETED', conclusion: 'SKIPPED', startedAt: '2026-11-24T10:00:00Z' },
+	] }];
+	writeFileSync(join(dir, 'gh'), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const out = (x) => console.log(JSON.stringify(x));
+if (args[0] === 'repo') out({ owner: { login: 'o' }, name: 'r' });
+else if (args[0] === 'pr') out(args.includes('merged') ? [] : ${JSON.stringify(prs)});
+else if (args[0] === 'workflow') out([{ name: 'Verify' }]);
+else out([]);
+`);
+	chmodSync(join(dir, 'gh'), 0o755);
+	const path = process.env.PATH;
+	process.env.PATH = `${dir}:${path}`;
+	try {
+		const crew = await readCrew({ ...DEFAULTS, root: dir });
+		assert.equal(crew.prs[0].foreman.ready, true);
+	} finally {
+		process.env.PATH = path;
+	}
 });
 
 test('auto-approve --merge: tells the workflow which PRs it merged ($GITHUB_OUTPUT)', async () => {

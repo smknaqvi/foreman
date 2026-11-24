@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { DEFAULTS } from '../lib/config.mjs';
 import { serve } from '../lib/dashboard.mjs';
+import { forgetWorkflows } from '../lib/state.mjs';
 import { check, command, read, send } from '../lib/notify.mjs';
 import { round } from '../lib/observe.mjs';
 import { live } from '../lib/previews.mjs';
@@ -52,7 +53,10 @@ const a = JSON.parse(require('fs').readFileSync(${JSON.stringify(join(bin, 'answ
 const args = process.argv.slice(2);
 const q = args.find((x) => x.startsWith('query=')) ?? '';
 if (args[0] === 'api' && args[1] === 'graphql') console.log(JSON.stringify(q.includes('search(') ? a.search : a.deployments));
-else if (args[0] === 'run') console.log(JSON.stringify(a.runs ?? []));
+else if (args[0] === 'run') {
+	const opt = (f) => (args.includes(f) ? args[args.indexOf(f) + 1] : undefined);
+	console.log(JSON.stringify((a.runs ?? []).filter((r) => (!opt('--workflow') || r.workflowName === opt('--workflow')) && (!opt('--event') || r.event === opt('--event')))));
+}
 else if (args[0] === 'workflow') console.log(JSON.stringify(a.workflows ?? []));
 else if (args[0] === 'pr') console.log(JSON.stringify(a.prs ?? []));
 else if (args[0] === 'repo') console.log(JSON.stringify({ owner: { login: 'acme' }, name: 'app' }));
@@ -165,13 +169,17 @@ test('observe round: checks and previews as events, with what a person may want 
 		assert.match(events[1].text, /ready at https:\/\/pr-5\.vercel\.app/);
 		assert.equal(events[2].notify.key, 'base-failed:7');
 		assert.deepEqual(await round(config, state, adapter), [], 'nothing repeats');
-		// Only a run of the workflow that makes requiredCheck holds merges, and only that one is notified.
+		// Every failed push run is notified (a deploy matters), a hand-started one only if it holds merges; the run
+		// that holds merges is marked. A newer scheduled run of the same workflow doesn't hide a failed push run.
+		forgetWorkflows();
 		gh.set({ prs: [pr('FAILURE')], deployments: deployments('https://pr-5.vercel.app'), workflows: [{ name: 'Verify' }, { name: 'Deploy POC' }], runs: [
+			{ workflowName: 'Verify', status: 'completed', conclusion: 'success', displayTitle: 'n', databaseId: 10, event: 'schedule', url: 'u' },
 			{ workflowName: 'Deploy POC', status: 'completed', conclusion: 'failure', displayTitle: 'y', databaseId: 9, event: 'push', url: 'u' },
+			{ workflowName: 'Plugin updates', status: 'completed', conclusion: 'failure', displayTitle: 'p', databaseId: 11, event: 'workflow_dispatch', url: 'u' },
 			{ workflowName: 'Verify', status: 'completed', conclusion: 'failure', displayTitle: 'z', databaseId: 8, event: 'push', url: 'u' },
 		] });
 		const more = await round(config, state, adapter);
-		assert.deepEqual(more.map((e) => [e.text.replace(/ · .*/, ''), Boolean(e.notify)]), [['MAIN CI: Deploy POC failure', false], ['MAIN CI: Verify failure (holds merges)', true]]);
+		assert.deepEqual(more.map((e) => [e.text.replace(/ · .*/, ''), Boolean(e.notify)]), [['MAIN CI: Deploy POC failure', true], ['MAIN CI: Plugin updates (workflow_dispatch) failure', false], ['MAIN CI: Verify failure (holds merges)', true]]);
 	} finally {
 		gh.restore();
 	}

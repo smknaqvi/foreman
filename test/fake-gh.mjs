@@ -8,7 +8,7 @@
  *     prCommits? (the PR's commits; default: one by GitHub Actions' bot at its head), pr.author?,
  *     forcePushes? (GraphQL force-push timeline), dispatched (gh workflow run calls, recorded), dispatchFails?,
  *     mergeFails? (gh pr merge refuses), workflows? (gh workflow list), workflowRuns? (the head's workflow runs),
- *     apiCalls (REST reads, recorded) }
+ *     apiCalls (REST reads, recorded), workflowsFail? (gh workflow list fails) }
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -27,13 +27,18 @@ const [a, b] = args;
 const jq = args.includes('--jq');
 if (a === 'repo' && b === 'view') out(jq ? s.repo : JSON.stringify({ nameWithOwner: s.repo }));
 else if (a === 'pr' && b === 'list') out(JSON.stringify([{ number: s.pr.number ?? 7, headRefName: s.pr.branch, headRefOid: s.pr.head, isCrossRepository: false, isDraft: s.pr.isDraft, baseRefName: 'main', author: s.pr.author ?? { login: 'app/github-actions', is_bot: true } }]));
-else if (a === 'run' && b === 'list') out(JSON.stringify(s.runs ?? []));
+else if (a === 'run' && b === 'list') {
+	// Filtered as gh does: --workflow (by name), --event, --commit, then --limit.
+	const opt = (f) => (args.includes(f) ? args[args.indexOf(f) + 1] : undefined);
+	const [wf, ev, sha, limit] = [opt('--workflow'), opt('--event'), opt('--commit'), Number(opt('--limit') ?? 20)];
+	out(JSON.stringify((s.runs ?? []).filter((r) => (!wf || r.workflowName === wf) && (!ev || r.event === ev) && (!sha || r.headSha === sha)).slice(0, limit)));
+}
 else if (a === 'api' && b === 'graphql') {
 	// Force-push timelines (approvals before a rebase): s.forcePushes, [{ beforeCommit: { oid, status: { contexts } } }].
 	const q = args.find((x) => x.startsWith('query=')) ?? '';
 	const repository = Object.fromEntries([...q.matchAll(/p(\d+):pullRequest/g)].map(([, n]) => [`p${n}`, { timelineItems: { nodes: s.forcePushes ?? [] } }]));
 	out(JSON.stringify({ data: { repository } }));
-} else if (a === 'workflow' && b === 'list') out(JSON.stringify(s.workflows ?? []));
+} else if (a === 'workflow' && b === 'list') { if (s.workflowsFail) { process.stderr.write('HTTP 502: Bad Gateway\n'); process.exit(1); } out(JSON.stringify(s.workflows ?? [])); }
 else if (a === 'workflow' && b === 'run') { (s.dispatched ??= []).push(args.slice(2).join(' ')); save(); if (s.dispatchFails) process.exit(1); }
 else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
