@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { payloadCommand, refused, samplePayload } from '../lib/agents.mjs';
+import { payloadCommand, payloadCwd, refused, samplePayload } from '../lib/agents.mjs';
 import { blockedReason } from '../lib/guard.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -333,6 +333,9 @@ test('reads the command from each tool\'s payload', () => {
 	assert.equal(payloadCommand({ tool_input: { command: ['bash', '-lc', 'gh pr merge 1'] } }), 'gh pr merge 1');
 	assert.equal(payloadCommand({ tool_input: { command: ['gh', 'pr', 'merge', '1'] } }), 'gh pr merge 1');
 	assert.equal(payloadCommand({}), '');
+	assert.equal(payloadCwd({ cwd: '/a/feature', tool_input: { command: 'git push', dir_path: '../main' } }), '/a/main', 'Gemini CLI\'s dir_path');
+	assert.equal(payloadCwd({ cwd: '/a/feature', tool_input: { command: 'git push', workdir: '/b' } }), '/b', 'Codex\'s workdir');
+	assert.equal(payloadCwd({ command: 'ls', cwd: '/a', workspace_roots: ['/a'] }), '/a');
 });
 
 test('git\'s pre-push check refuses pushes to the base branch only', () => {

@@ -17,8 +17,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const PKG = '@smknaqvi/foreman';
 const at = process.argv.indexOf('--agent');
 const agent = (at > 0 && process.argv[at + 1]) || 'claude';
-// The checkout this file is in (<root>/.claude/hooks/), whichever tool runs it and from wherever.
-const root = process.env.CLAUDE_PROJECT_DIR || fileURLToPath(new URL('../..', import.meta.url));
+// The checkout this file is in (<root>/.claude/hooks/), whichever tool runs it and from wherever. Claude Code
+// says it in CLAUDE_PROJECT_DIR; another tool may have inherited that from a Claude Code session elsewhere.
+const own = fileURLToPath(new URL('../..', import.meta.url));
+const root = (agent === 'claude' && process.env.CLAUDE_PROJECT_DIR) || own;
 let raw = '';
 try { raw = readFileSync(0, 'utf8'); } catch {}
 let command = '';

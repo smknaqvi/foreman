@@ -178,12 +178,37 @@ test('init --agents wires the guard into each tool\'s own hook settings, once', 
 	assert.match(out, /Cursor: blocks gh pr merge/);
 });
 
-test('init without --agents: Claude Code, plus the tools whose folder the repo already has', () => {
+test('init without --agents: the tools the repo is set up for, or Claude Code', () => {
+	const fresh = repo();
+	cli(fresh, 'init');
+	assert.ok(existsSync(join(fresh, '.claude/settings.json')), 'a repo set up for no tool gets Claude Code');
+	assert.ok(!existsSync(join(fresh, '.cursor/hooks.json')));
+
+	const both = repo();
+	mkdirSync(join(both, '.cursor'));
+	mkdirSync(join(both, '.claude'));
+	writeFileSync(join(both, '.claude/settings.json'), '{}');
+	cli(both, 'init');
+	assert.ok(existsSync(join(both, '.cursor/hooks.json')));
+	assert.match(readFileSync(join(both, '.claude/settings.json'), 'utf8'), /foreman-guard/);
+	assert.ok(!existsSync(join(both, '.codex/hooks.json')));
+
+	const codexOnly = repo();
+	cli(codexOnly, 'init', '--agents', 'codex');
+	cli(codexOnly, 'init', '--force');
+	assert.ok(!existsSync(join(codexOnly, '.claude/settings.json')), 'refreshing a Codex-only repo adds no Claude Code hook');
+	assert.ok(existsSync(join(codexOnly, '.codex/hooks.json')));
+
+	const typo = repo();
+	assert.throws(() => cli(typo, 'init', '--agents', 'claud'), /Unknown agent tool claud/);
+	assert.ok(!existsSync(join(typo, 'foreman.config.json')), 'an unknown tool stops init before it writes anything');
+});
+
+test('guard --self-test fails when a tool the repo is set up for lost its hook, even with others wired', () => {
 	const dir = repo();
-	mkdirSync(join(dir, '.cursor'));
-	cli(dir, 'init');
-	assert.ok(existsSync(join(dir, '.claude/settings.json')));
-	assert.ok(existsSync(join(dir, '.cursor/hooks.json')));
-	assert.ok(!existsSync(join(dir, '.codex/hooks.json')));
-	assert.ok(!existsSync(join(dir, '.gemini/settings.json')));
+	cli(dir, 'init', '--agents', 'claude,cursor');
+	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
+	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
+	writeFileSync(join(dir, '.claude/settings.json'), '{}');
+	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}every tool set up here runs it \(missing: \.claude\/settings\.json\)/.test(e.stdout));
 });
