@@ -49,10 +49,10 @@ Builders
 Setup
   init [--force] [--agents <tools>] [--ci [--self-hosted <labels>]] [--conductor]
                                           set a repo up (config, hooks, guard, playbooks, CI). --agents:
-                                          which tools get the merge guard, from claude,codex,cursor,gemini
+                                          which tools get the merge guard, from claude,codex,cursor,antigravity,gemini
                                           (default: claude plus those whose folder exists)
   doctor                                  check this checkout is ready
-  guard [--agent claude|codex|cursor|gemini]
+  guard [--agent claude|codex|cursor|antigravity|gemini]
                                           the merge guard hook itself (reads that tool's hook payload on
                                           stdin; claude by default)
   guard --command "<command>" [--cwd <dir>]

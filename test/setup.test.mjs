@@ -2,7 +2,7 @@
  * Config loading, `foreman init` and `foreman workspace`, and the environment adapters' setup.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -211,4 +211,67 @@ test('guard --self-test fails when a tool the repo is set up for lost its hook, 
 	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
 	writeFileSync(join(dir, '.claude/settings.json'), '{}');
 	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}every tool set up here runs it \(missing: \.claude\/settings\.json\)/.test(e.stdout));
+});
+
+test('init --agents antigravity: its hooks.json, and links to every playbook in .agents/skills/', () => {
+	const dir = repo();
+	mkdirSync(join(dir, '.claude/skills/local-site'), { recursive: true });
+	writeFileSync(join(dir, '.claude/skills/local-site/SKILL.md'), '---\nname: local-site\ndescription: x\n---\n');
+	mkdirSync(join(dir, '.agents/skills/ours'), { recursive: true }); // A skill of the repo's own there: left alone.
+	cli(dir, 'init', '--agents', 'claude,antigravity');
+	const hooks = JSON.parse(readFileSync(join(dir, '.agents/hooks.json'), 'utf8'));
+	assert.equal(hooks['foreman-guard'].PreToolUse[0].matcher, 'run_command');
+	const command = hooks['foreman-guard'].PreToolUse[0].hooks[0].command;
+	assert.match(command, /--agent antigravity/);
+	// The command as a shell runs it: outside the checkout it still refuses gh and git push (and allows the rest).
+	const outside = (c) => JSON.parse(execFileSync('sh', ['-c', command], { cwd: tmpdir(), input: JSON.stringify({ toolCall: { name: 'run_command', args: { CommandLine: c } } }), encoding: 'utf8' })).decision;
+	assert.equal(outside('gh pr merge 1'), 'deny');
+	assert.equal(outside('git push origin main'), 'deny');
+	assert.equal(outside('ls'), 'allow');
+	for (const skill of ['coordinate-agents', 'work-an-issue', 'local-site']) {
+		assert.ok(lstatSync(join(dir, '.agents/skills', skill)).isSymbolicLink(), skill);
+		assert.ok(existsSync(join(dir, '.agents/skills', skill, 'SKILL.md')), `${skill} resolves`);
+	}
+	cli(dir, 'init', '--agents', 'claude,antigravity');
+	assert.equal(JSON.parse(readFileSync(join(dir, '.agents/hooks.json'), 'utf8'))['foreman-guard'].PreToolUse.length, 1, 'added once');
+	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
+	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
+	assert.match(cli(dir, 'guard', '--self-test'), /Antigravity: blocks gh pr merge/);
+	const payload = (c) => JSON.stringify({ toolCall: { name: 'run_command', args: { CommandLine: c, Cwd: dir } }, workspacePaths: [dir] });
+	assert.equal(JSON.parse(execFileSync('sh', ['-c', command], { cwd: join(dir, '.claude'), input: payload('gh pr merge 1'), encoding: 'utf8' })).decision, 'deny', 'from a subfolder too');
+	assert.equal(JSON.parse(execFileSync('sh', ['-c', command], { cwd: dir, input: payload('ls'), encoding: 'utf8' })).decision, 'allow');
+
+	// Switched off by a PR: no longer counts as wired (the self-test fails), and init switches it back on.
+	const off = JSON.parse(readFileSync(join(dir, '.agents/hooks.json'), 'utf8'));
+	off['foreman-guard'].enabled = false;
+	writeFileSync(join(dir, '.agents/hooks.json'), JSON.stringify(off));
+	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /missing: \.agents\/hooks\.json/.test(e.stdout));
+	cli(dir, 'init', '--agents', 'claude,antigravity');
+	const on = JSON.parse(readFileSync(join(dir, '.agents/hooks.json'), 'utf8'))['foreman-guard'];
+	assert.equal(on.enabled, undefined);
+	assert.equal(on.PreToolUse.length, 1);
+
+	// A playbook removed later loses its link; a same-name folder of the repo's own is left alone.
+	rmSync(join(dir, '.claude/skills/local-site'), { recursive: true });
+	mkdirSync(join(dir, '.claude/skills/ours'), { recursive: true });
+	writeFileSync(join(dir, '.claude/skills/ours/SKILL.md'), '---\ndescription: x\n---\n');
+	cli(dir, 'init', '--agents', 'claude,antigravity');
+	assert.throws(() => lstatSync(join(dir, '.agents/skills/local-site')), 'the dangling link is removed');
+	assert.ok(!lstatSync(join(dir, '.agents/skills/ours')).isSymbolicLink(), 'the repo\'s own folder stays');
+
+	// The self-test runs the command the settings hold, so a replaced one fails it.
+	const fake = JSON.parse(readFileSync(join(dir, '.agents/hooks.json'), 'utf8'));
+	fake['foreman-guard'].PreToolUse[0].hooks[0].command = `echo '{"decision":"allow"}' # foreman-guard`;
+	writeFileSync(join(dir, '.agents/hooks.json'), JSON.stringify(fake));
+	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}Antigravity: blocks gh pr merge/.test(e.stdout));
+});
+
+test('init: a .agents/ folder alone (Codex skills) is not an Antigravity repo; an old shim is replaced', () => {
+	const dir = repo();
+	mkdirSync(join(dir, '.agents/skills'), { recursive: true });
+	cli(dir, 'init');
+	assert.ok(!existsSync(join(dir, '.agents/hooks.json')));
+	writeFileSync(join(dir, '.claude/hooks/foreman-guard.mjs'), '// an old shim without a version\n');
+	cli(dir, 'init', '--agents', 'claude,antigravity');
+	assert.match(readFileSync(join(dir, '.claude/hooks/foreman-guard.mjs'), 'utf8'), /foreman-shim: 2/, 'replaced without --force');
 });
