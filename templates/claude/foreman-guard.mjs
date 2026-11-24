@@ -2,8 +2,10 @@
 /**
  * Installed by `foreman init`. Every agent tool it's wired into runs this before each shell command, saying which
  * tool it is with --agent (none: Claude Code, from .claude/settings.json; codex from .codex/hooks.json, cursor
- * from .cursor/hooks.json, gemini from .gemini/settings.json). It hands the decision to the merge guard in the
- * installed foreman package, so a foreman upgrade updates it, and answers in that tool's format.
+ * from .cursor/hooks.json, antigravity from .agents/hooks.json, gemini from .gemini/settings.json). It hands the
+ * decision to the merge guard in the installed foreman package, so a foreman upgrade updates it, and answers in
+ * that tool's format. foreman-shim: 2 (`foreman init` replaces an installed shim with another number: a newer
+ * shim knows more tools' formats).
  * Whenever that guard can't be trusted to run, it refuses gh and git push commands (everything else runs):
  *   - foreman isn't installed in this checkout yet,
  *   - the installed foreman isn't the one package-lock.json pins (run npm install after a rebase),
@@ -50,7 +52,8 @@ try {
 } catch (e) {
 	if (guarded) reason = `The merge guard can't run (${e.message}), so it refuses gh and git push commands until that's fixed.`;
 }
-// Each tool's way of saying no (lib/agents.mjs, refusal()). An allowed command gets no output.
+// Each tool's way of saying no (lib/agents.mjs, refusal()). An allowed command gets no output, except in
+// Antigravity, whose hooks must always answer (below).
 const answers = {
 	cursor: (r) => ({ continue: true, permission: 'deny', user_message: r, agent_message: r }),
 	gemini: (r) => ({ decision: 'deny', reason: r }),
