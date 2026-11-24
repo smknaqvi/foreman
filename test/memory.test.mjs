@@ -74,6 +74,13 @@ test('parseNote reads foreman\'s form and Claude Code\'s nested metadata.type, w
 	assert.equal(back.description, 'Ports: from 56000 # not a comment');
 	assert.equal(back.source, 'PR #3');
 	assert.match(text, /^description: "Ports/m);
+	// Values YAML would read as another type, or trim, are quoted too, and read back as written.
+	for (const v of ['true', 'No', 'null', '~', '42', '-1.5', '1e3', '0x1f', '.inf', '2026-11-24', ' padded ', '']) {
+		const t = formatNote({ name: 'n', description: v, type: 'project' }, 'b');
+		assert.ok(t.split('\n').includes(`description: ${JSON.stringify(v)}`), `${JSON.stringify(v)} is quoted:\n${t}`);
+		assert.equal(parseNote(t).description, v, 'and reads back as written');
+	}
+	assert.match(formatNote({ name: 'n', description: 'Plain words, v1.2', type: 'project' }, 'b'), /^description: Plain words, v1\.2$/m);
 
 	assert.deepEqual(parseIndex('# M\n\n- [A](a.md) — hook a\n* [B](./b.md): hook b\n- not a link\n- [Guide](../AGENTS.md) — not a note\n').map((e) => [e.file, e.hook]), [['a.md', 'hook a'], ['b.md', 'hook b']]);
 });
@@ -227,8 +234,10 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	const commit = (files, date) => { write(dir, files); git(['add', '-A'], date); git(['commit', '-q', '-m', date], date); };
 	commit({ 'README.md': 'x\n' }, '2026-01-01T00:00:00Z');
 	commit({ 'memory/MEMORY.md': index('a'), 'memory/a.md': note('a', 'A') }, '2026-03-01T12:00:00Z'); // The index is added.
-	commit({ 'memory/a.md': note('a', 'A, again') }, '2026-03-10T00:00:00Z'); // A later memory PR: not where counting starts.
-	write(dir, { 'memory/b.md': note('b', 'B', 'project', 'source: "PR #6"\n') }); // On the Coordinator's memory branch, not merged yet.
+	// A later memory PR (not where counting starts), with a note whose source is PR #6: applied.
+	commit({ 'memory/a.md': note('a', 'A, again'), 'memory/c.md': note('c', 'C', 'project', 'source: "PR #6"\n') }, '2026-03-10T00:00:00Z');
+	// A note naming PR #7 on the Coordinator's branch, not merged yet: doesn't count until it's on the base.
+	write(dir, { 'memory/b.md': note('b', 'B', 'project', 'source: "PR #7"\n') });
 
 	const stateFile = join(dir, '.git/gh-state.json');
 	const pr = (number, mergedAt, body) => ({ number, title: `PR ${number}`, body, mergedAt });
@@ -326,6 +335,17 @@ test('init creates the memory index once, never replaces it, and leaves a folder
 		assert.match(out, /memory\/ already holds files that aren't memory notes .* so it was left alone/);
 		assert.doesNotMatch(out, /Read memory\/MEMORY\.md before starting/);
 	}
+
+	// A file called memory, or a folder called x.md inside it: not a memory folder, and no crash.
+	const file = repo();
+	write(file, { memory: 'just a file\n' });
+	assert.match(cli(file, ['init']).out, /memory\/ already holds files that aren't memory notes/);
+	const odd = repo();
+	mkdirSync(join(odd, 'memory/x.md'), { recursive: true });
+	const oddOut = cli(odd, ['init']);
+	assert.equal(oddOut.code, 0, oddOut.out);
+	assert.ok(!existsSync(join(odd, 'memory/MEMORY.md')));
+	assert.match(cli(file, ['memory', 'check']).out, /memory isn't a folder/);
 
 	// A folder of notes alone (copied from a Claude Code memory, say) is adopted, and its notes listed.
 	const notes = repo();

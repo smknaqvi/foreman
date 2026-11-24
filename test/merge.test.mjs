@@ -67,9 +67,9 @@ function setup(files = { 'app.txt': 'feature\n' }, { base = {} } = {}) {
 		publish(sha);
 		return sha;
 	};
-	const run = (script, args, config) => {
+	const run = (script, args, config, sub = '') => {
 		const r = spawnSync('bash', [join(ROOT, `scripts/${script}.sh`), ...args], {
-			cwd: work,
+			cwd: join(work, sub), // sub: run from a subfolder holding the config.
 			encoding: 'utf8',
 			env: { ...process.env, ...scriptEnv({ ...DEFAULTS, ...config }), PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: stateFile, FOREMAN_LOCK_WAIT: '1' },
 		});
@@ -77,8 +77,8 @@ function setup(files = { 'app.txt': 'feature\n' }, { base = {} } = {}) {
 		Object.assign(state, now);
 		return { code: r.status, out: r.stdout + r.stderr, merged: now.merged };
 	};
-	const merge = (args, config = {}) => run('merge', ['7', ...args], config);
-	const approve = (args, config = {}) => run('approve', ['7', ...args], config);
+	const merge = (args, config = {}, sub = '') => run('merge', ['7', ...args], config, sub);
+	const approve = (args, config = {}, sub = '') => run('approve', ['7', ...args], config, sub);
 	return { state, save, pr, advanceMain, rebase, merge, approve };
 }
 
@@ -240,7 +240,7 @@ test('foreman approve --memory: both approvals on a memory PR; refused for a PR 
 	const code = setup({ 'app.txt': 'code\n' }, withMemory);
 	const no = code.approve([code.pr, '--memory']);
 	assert.equal(no.code, 1);
-	assert.match(no.out, /doesn't change memory\/: approve it without --memory/);
+	assert.match(no.out, /doesn't change the shared memory \(or it isn't set up on main\): approve it without --memory/);
 	assert.deepEqual(code.state.approved, [], 'nothing approved');
 	assert.equal(code.approve([code.pr]).code, 0, 'a plain approval still works');
 	assert.deepEqual(code.state.memoryApproved ?? [], []);
@@ -276,4 +276,33 @@ test('reads the memory setting from the base branch, so a PR can\'t switch the r
 	const broken = setup({ 'memory/b.md': 'x\n' }, { base: { ...withMemory.base, 'foreman.config.json': '{ not json' } });
 	broken.state.approved.push(broken.pr); broken.save();
 	assert.match(broken.merge([]).out, REFUSED, 'a base config that doesn\'t parse keeps the rule on');
+});
+
+test('a config in a subfolder: the memory is that folder\'s, read from the same place on the base', () => {
+	const base = { 'packages/app/foreman.config.json': '{}\n', 'packages/app/memory/MEMORY.md': '# Memory\n' };
+	const t = setup({ 'packages/app/memory/b.md': 'x\n' }, { base });
+	t.state.approved.push(t.pr); t.save();
+	const r = t.merge([], {}, 'packages/app');
+	assert.equal(r.merged, false, r.out);
+	assert.match(r.out, /This PR changes packages\/app\/memory\/: only the Coordinator's memory PRs merge it/);
+	assert.equal(t.approve([t.pr, '--memory'], {}, 'packages/app').code, 0);
+	assert.equal(t.merge([], {}, 'packages/app').merged, true);
+
+	const top = setup({ 'memory/x.md': 'not the app\'s memory\n' }, { base });
+	top.state.approved.push(top.pr); top.save();
+	assert.equal(top.merge([], {}, 'packages/app').merged, true, 'memory/ at the top isn\'t this config\'s memory');
+
+	const off = setup({ 'packages/app/memory/b.md': 'x\n' }, { base: { ...base, 'packages/app/foreman.config.json': '{"memory":{"dir":""}}\n' } });
+	off.state.approved.push(off.pr); off.save();
+	assert.equal(off.merge([], {}, 'packages/app').merged, true, 'switched off in that config on the base');
+});
+
+test('approve --memory writes the memory approval first: if the main one then fails, nothing counts as approved', () => {
+	const t = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
+	t.state.failStatus = 'coordinator-review'; t.save();
+	const r = t.approve([t.pr, '--memory']);
+	assert.notEqual(r.code, 0);
+	assert.deepEqual(t.state.approved, [], 'no main approval');
+	delete t.state.failStatus; t.save();
+	assert.match(t.merge([]).out, /isn't approved/, 'and merge refuses it');
 });

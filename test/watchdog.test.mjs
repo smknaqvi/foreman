@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { DEFAULTS, loadConfig } from '../lib/config.mjs';
 import { agentActivity, limitStop, observerRound, projectFolder, resetTime } from '../lib/sessions.mjs';
-import { rebaseAndMerge } from '../lib/tick.mjs';
+import { rebaseAndMerge, tick } from '../lib/tick.mjs';
 import { classify, decide, plist } from '../lib/watchdog.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -241,7 +241,7 @@ function tickRepo(featureFile) {
 	execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
 	execFileSync('git', ['clone', '-q', origin, work], { stdio: 'ignore' });
 	const git = (...a) => execFileSync('git', ['-C', work, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
-	const commit = (file, body) => { writeFileSync(join(work, file), body); git('add', '-A'); git('commit', '-q', '-m', file); return git('rev-parse', 'HEAD'); };
+	const commit = (file, body) => { mkdirSync(join(work, file, '..'), { recursive: true }); writeFileSync(join(work, file), body); git('add', '-A'); git('commit', '-q', '-m', file); return git('rev-parse', 'HEAD'); };
 	git('symbolic-ref', 'HEAD', 'refs/heads/main');
 	commit('README.md', 'hello\n');
 	git('push', '-q', 'origin', 'main');
@@ -262,7 +262,7 @@ function tickRepo(featureFile) {
 	const prObj = { number: 7, headRefName: 'feature', headRefOid: pr, foreman: { approvedSha: pr } };
 	const state = () => JSON.parse(readFileSync(stateFile, 'utf8'));
 	const branch = () => execFileSync('git', ['-C', origin, 'rev-parse', 'refs/heads/feature'], { encoding: 'utf8' }).trim();
-	return { config, prObj, state, branch, pr };
+	return { config, prObj, state, branch, pr, git, commit, stateFile };
 }
 
 test('tick: rebases an approved PR onto the base and merges it through the gate', async () => {
@@ -282,6 +282,29 @@ test('tick: leaves a PR that does not rebase cleanly alone', async () => {
 	assert.match(said.join('\n'), /doesn't rebase cleanly/);
 	assert.equal(t.branch(), t.pr, 'the branch is untouched');
 	assert.equal(t.state().merged, false);
+});
+
+test('tick: leaves a PR that changes the shared memory alone until the Coordinator\'s memory approval is on it', async () => {
+	const t = tickRepo('memory/b.md');
+	t.commit('memory/MEMORY.md', '# Memory\n'); // The memory is set up on main.
+	t.git('push', '-q', 'origin', 'main');
+	const status = (ctx) => ({ __typename: 'StatusContext', context: ctx, state: 'SUCCESS' });
+	const openPr = (rollup) => ({ number: 7, title: 'A note', headRefName: 'feature', headRefOid: t.pr, isCrossRepository: false, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND',
+		statusCheckRollup: [...rollup, { __typename: 'CheckRun', name: 'verify', status: 'COMPLETED', conclusion: 'SUCCESS' }], closingIssuesReferences: [], files: [{ path: 'memory/b.md' }] });
+	const write = (extra) => writeFileSync(t.stateFile, JSON.stringify({ ...t.state(), ...extra }));
+
+	write({ openPrs: [openPr([status('coordinator-review')])] });
+	const said = [];
+	const r = await tick(t.config, { log: (m) => said.push(m) });
+	assert.deepEqual(r.merged, [], said.join('\n'));
+	assert.match(said.join('\n'), /No approved PR is ready to merge/);
+	assert.equal(t.branch(), t.pr, 'not rebased or pushed: merge would refuse it, round after round');
+	assert.equal(t.state().merged, false);
+
+	write({ openPrs: [openPr([status('coordinator-review'), status('coordinator-review-memory')])], memoryApproved: [t.pr] });
+	const again = await tick(t.config, { log: (m) => said.push(m) });
+	assert.deepEqual(again.merged, [7], said.join('\n'));
+	assert.ok(t.state().memoryApproved.includes(t.branch()), 'the memory approval was carried over to the rebased commit');
 });
 
 test('watchdog session: runs the command and records how it ended', () => {

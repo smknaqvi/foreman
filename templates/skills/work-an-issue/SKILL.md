@@ -24,7 +24,7 @@ git fetch origin && git rebase origin/<base>     # the base branch in foreman.co
 ## Before the PR
 - Run the repo's `verifyCommand` (in `foreman.config.json`) and whatever the playbooks add.
 - Don't edit the plan file (`planFile`): parallel agents would conflict. Collect changes for the PR's "Plan updates" section.
-- **Never edit the memory folder** (`memory/`). Only the Coordinator does, in its own memory PRs: `foreman merge` refuses yours if it changes it. Collect what future agents should know for the PR's "Memory updates" section instead. Your agent tool's own memory (Claude Code's per-user memory folder, say) is fine for you, but no one else can read it: what the next agent needs goes in the PR.
+- **Never edit the memory folder** (`memory/`). Only the Coordinator does, in its own memory PRs: `foreman merge` refuses yours if it changes it. Never run `foreman approve` (with or without `--memory`) yourself: approving is the Coordinator's, even though nothing technically stops you. Collect what future agents should know for the PR's "Memory updates" section instead. Your agent tool's own memory (Claude Code's per-user memory folder, say) is fine for you, but no one else can read it: what the next agent needs goes in the PR.
 - `git fetch origin && git rebase origin/<base>` (then `npm install` if `package-lock.json` changed), and verify again.
 
 ## PR

@@ -29,21 +29,19 @@ if [ "$head" != "$reviewed" ]; then
 	exit 1
 fi
 if [ "$memory" = 1 ]; then
-	# Only for a PR that changes the memory: the approval says "this memory change was reviewed".
+	# Only for a PR that changes the memory: the approval says "this memory change was reviewed". The same
+	# rule foreman merge applies (lib/memory-rule.mjs).
 	git fetch -q origin "$base" "pull/$pr/head"
-	memory_dir=$({ git show "origin/$base:foreman.config.json" 2>/dev/null || true; } | node "$here/memory-dir.mjs")
-	[ -n "$memory_dir" ] || { echo "Shared memory is off on $base (memory.dir is empty): --memory isn't needed." >&2; exit 1; }
-	touches=0
-	while IFS= read -r -d '' f; do
-		case "$f" in "$memory_dir"/*) touches=1 ;; esac
-	done < <(git -c core.quotePath=false diff --name-only --no-renames -z "origin/$base...$head")
-	[ "$touches" = 1 ] || { echo "PR #$pr doesn't change $memory_dir/: approve it without --memory." >&2; exit 1; }
+	memory_files=$(node "$here/memory-dir.mjs" files "origin/$base" "$head" | tr '\0' '\n') || { echo "Couldn't check whether PR #$pr changes the shared memory." >&2; exit 1; }
+	[ -n "$memory_files" ] || { echo "PR #$pr doesn't change the shared memory (or it isn't set up on $base): approve it without --memory." >&2; exit 1; }
+	# The memory approval first: if the next call fails, the PR has no approval at all rather than half of one
+	# (a memory PR with only the main approval would be refused at merge, and look done).
+	gh api "repos/{owner}/{repo}/statuses/$head" -f state=success -f context="$context-memory" \
+		-f description="Memory change approved by the Coordinator" >/dev/null
 fi
 gh api "repos/{owner}/{repo}/statuses/$head" -f state=success -f context="$context" \
 	-f description="Approved after review" >/dev/null
 if [ "$memory" = 1 ]; then
-	gh api "repos/{owner}/{repo}/statuses/$head" -f state=success -f context="$context-memory" \
-		-f description="Memory change approved by the Coordinator" >/dev/null
 	echo "Approved PR #$pr at ${head:0:7}, memory change included."
 else
 	echo "Approved PR #$pr at ${head:0:7}."

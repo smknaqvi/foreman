@@ -6,6 +6,8 @@
  *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], memoryApproved?: [sha],
  *     verify: { sha: conclusion },
  *     failed: { sha: "names" }, checksPass, merged, origin?, mergedPrs?: [{ number, title, body, mergedAt, headRefName }] }
+ * For `foreman tick` (lib/state.mjs's readCrew): { openPrs?: [PRs as `gh pr list --json` gives them] }; runs,
+ * issues and earlier approvals are empty.
  * `pr list` calls are recorded in `calls`, so a test can check what was asked.
  */
 import { execFileSync } from 'node:child_process';
@@ -22,8 +24,13 @@ const save = () => writeFileSync(file, JSON.stringify(s));
 const out = (x) => process.stdout.write(`${x}\n`);
 const [a, b] = args;
 
-if (a === 'repo' && b === 'view') out(s.repo);
-else if (a === 'api') {
+if (a === 'repo' && b === 'view') out(args.includes('owner,name') ? JSON.stringify({ owner: { login: s.repo.split('/')[0] }, name: s.repo.split('/')[1] }) : s.repo);
+else if ((a === 'run' || a === 'issue') && b === 'list') out('[]');
+else if (a === 'api' && b === 'graphql') { // Approvals from before a force-push: none.
+	const query = args.find((x) => x.startsWith('query=')) ?? '';
+	const repository = Object.fromEntries([...query.matchAll(/\b(p\d+):pullRequest/g)].map(([, k]) => [k, { timelineItems: { nodes: [] } }]));
+	out(JSON.stringify({ data: { repository } }));
+} else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
 	let m;
 	// Two approvals: the Coordinator's (approved) and its memory approval (a context ending in -memory).
@@ -32,7 +39,11 @@ else if (a === 'api') {
 	if ((m = ep.match(/commits\/(\w+)\/statuses$/))) {
 		const ctx = args[args.indexOf('--jq') + 1].match(/\.context=="([^"]+)"/)?.[1] ?? '';
 		out(list(ctx).includes(m[1]) ? 'success' : '');
-	} else if ((m = ep.match(/\/statuses\/(\w+)$/))) { list(field('context')).push(m[1]); save(); }
+	} else if ((m = ep.match(/\/statuses\/(\w+)$/))) {
+		if (field('context') === s.failStatus) { process.stderr.write('fake gh: HTTP 502\n'); process.exit(1); } // failStatus: that write fails.
+		list(field('context')).push(m[1]);
+		save();
+	}
 	else if ((m = ep.match(/commits\/(\w+)\/check-runs$/)) && args.includes('-f')) {
 		const name = args[args.indexOf('-f') + 1].replace(/^check_name=/, '');
 		out(name === (s.checkName ?? 'verify') ? s.verify[m[1]] ?? '' : '');
@@ -46,7 +57,7 @@ else if (a === 'api') {
 } else if (a === 'pr' && b === 'list') {
 	s.calls = [...(s.calls ?? []), args.join(' ')];
 	save();
-	out(JSON.stringify(s.mergedPrs ?? []));
+	out(JSON.stringify(args.includes('open') ? s.openPrs ?? [] : s.mergedPrs ?? []));
 } else if (a === 'pr' && b === 'checks') process.exit(s.checksPass ? 0 : 1);
 else if (a === 'pr' && b === 'merge') {
 	const head = args[args.indexOf('--match-head-commit') + 1];

@@ -4,11 +4,10 @@
 #      or on the pre-rebase commit given with --rebased-from, provided replaying that approved change onto
 #      the current base yields exactly the head's files (so only a clean rebase passes),
 #   2. it is up to date with the base branch,
-#   3. a PR that changes the shared memory (memory.dir, read from the base branch's foreman.config.json so
-#      a PR can't switch the rule off for itself) also carries the Coordinator's memory approval
-#      (foreman approve --memory: the status "<approval context>-memory") on the approved commit. Builders
-#      propose memory changes in their PR's "Memory updates" section instead. The rule holds once the base
-#      has <memory.dir>/MEMORY.md, or for a PR that changes that index (the one setting the memory up),
+#   3. a PR that changes the shared memory also carries the Coordinator's memory approval (foreman approve
+#      --memory: the status "<approval context>-memory") on the approved commit. Which PRs that is comes
+#      from lib/memory-rule.mjs (through memory-dir.mjs), shared with approve.sh and foreman status. Builders
+#      propose memory changes in their PR's "Memory updates" section instead,
 #   4. the required check passed, and nothing else failed. Not waited for when every changed file matches
 #      $FOREMAN_DOCS_ONLY, or when it is a clean rebase of an approved commit whose own required check
 #      passed (the base branch's CI still runs after the merge) and none of $FOREMAN_STALE_PATHS changed
@@ -66,7 +65,7 @@ if ! git merge-base --is-ancestor "origin/$base" "$head"; then
 fi
 
 # The PR's own changes (head contains the base), NUL-separated so every name arrives as it is: without
-# -z and core.quotePath=false, git would quote "memory/café.md" and it would slip past the memory rule.
+# -z and core.quotePath=false, git would quote "docs/café.md" and the docs-only pattern would miss it.
 changed=()
 while IFS= read -r -d '' f; do changed+=("$f"); done < <(git -c core.quotePath=false diff --name-only --no-renames -z "origin/$base" "$head")
 files=""
@@ -109,34 +108,24 @@ if ! approved "$head"; then
 fi
 
 # 3. Only the Coordinator's memory PRs change the shared memory. Checked before anything that can skip a
-#    step: memory notes are Markdown, so a docs-only PR would otherwise skip its checks and merge. The folder
-#    comes from the base's config, so a PR can't switch the rule off for itself (no config there: the
-#    default; one that doesn't parse: the default too).
-memory_dir=$({ git show "origin/$base:foreman.config.json" 2>/dev/null || true; } | node "$here/memory-dir.mjs")
+#    step: memory notes are Markdown, so a docs-only PR would otherwise skip its checks and merge. Which
+#    folder, and whether the PR's files count, is the one rule in lib/memory-rule.mjs (the folder from the
+#    base's config, so a PR can't switch the rule off for itself). If it can't tell, refuse.
+memory_list=$(mktemp)
+trap 'rmdir "$lock"; rm -f "$memory_list"' EXIT
+node "$here/memory-dir.mjs" files "origin/$base" "$head" >"$memory_list" || { echo "PR #$pr: couldn't check whether it changes the shared memory, so not merging." >&2; exit 1; }
 memory_files=()
-if [ -n "$memory_dir" ]; then
-	for f in ${changed[@]+"${changed[@]}"}; do
-		case "$f" in "$memory_dir"/*) memory_files+=("$f") ;; esac
-	done
-fi
+while IFS= read -r -d '' f; do memory_files+=("$f"); done <"$memory_list"
 if [ ${#memory_files[@]} -gt 0 ]; then
-	# Once the base has the index; or for the PR that adds it. A folder of that name that isn't a foreman
-	# memory (no index) is left alone.
-	guarded=0
-	if git cat-file -e "origin/$base:$memory_dir/MEMORY.md" 2>/dev/null; then guarded=1; fi
-	for f in "${memory_files[@]}"; do
-		if [ "$f" = "$memory_dir/MEMORY.md" ]; then guarded=1; fi
-	done
-	if [ "$guarded" = 1 ]; then
-		if ! has_status "$approved_at" "$memory_context"; then
-			echo "PR #$pr changes ${memory_files[0]}$([ ${#memory_files[@]} -gt 1 ] && echo " and $(( ${#memory_files[@]} - 1 )) more")." >&2
-			echo "This PR changes $memory_dir/: only the Coordinator's memory PRs merge it (approved with foreman approve --memory). Put it in the PR's 'Memory updates' section instead." >&2
-			exit 1
-		fi
-		if [ "$approved_at" != "$head" ]; then
-			gh api "repos/$repo/statuses/$head" -f state=success -f context="$memory_context" \
-				-f description="Memory approval carried over: clean rebase of ${approved_at:0:7}" >/dev/null
-		fi
+	if ! has_status "$approved_at" "$memory_context"; then
+		memory_dir=$(node "$here/memory-dir.mjs" path "origin/$base" 2>/dev/null) || true
+		echo "PR #$pr changes ${memory_files[0]}$([ ${#memory_files[@]} -gt 1 ] && echo " and $(( ${#memory_files[@]} - 1 )) more")." >&2
+		echo "This PR changes ${memory_dir:-the shared memory}/: only the Coordinator's memory PRs merge it (approved with foreman approve --memory). Put it in the PR's 'Memory updates' section instead." >&2
+		exit 1
+	fi
+	if [ "$approved_at" != "$head" ]; then
+		gh api "repos/$repo/statuses/$head" -f state=success -f context="$memory_context" \
+			-f description="Memory approval carried over: clean rebase of ${approved_at:0:7}" >/dev/null
 	fi
 fi
 
