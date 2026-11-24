@@ -2,7 +2,11 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
-## Unreleased
+## 0.3.0 (2026-11-24)
+- **Any coding agent, not only Claude Code.**
+  - **The merge guard works in Codex, Cursor and Gemini CLI too.** `foreman init --agents claude,codex,cursor,gemini` wires it into each tool's project hooks (`.codex/hooks.json`, `.cursor/hooks.json`, `.gemini/settings.json`); without `--agents`, the tools the repo is already set up for (or Claude Code). `.codex/`, `.cursor/` and `.gemini/` are always risky paths. The same shim answers each tool in its own format, and finds its checkout from its own location. `foreman guard --agent <tool>` reads that tool's payload; **`foreman guard --command "<cmd>"`** checks one command for any other tool's hooks (exit 2 when refused). `doctor` lists the wired tools; `guard --self-test` tests each one and fails when a tool the repo is set up for lost its hook. The guard checks the folder the shell tool itself runs in (Gemini CLI's `dir_path`, Codex's `workdir`).
+  - **The playbooks are tool-neutral.** Each step says what it needs (a background agent in its own worktree, a message to it, a background `foreman observe`, a review), then how Claude Code does it.
+  - **The watchdog runs any agent CLI** (`watchdog.command`). Its activity check now also counts git activity in every worktree but its own (HEAD moving, changed tracked files), which any tool leaves; `status` and the dashboard still show Claude Code sessions only. Only Claude Code's transcripts show usage-limit stops, so with another tool the watchdog acts after `staleMinutes`, and says so when that's 0. A Coordinator whose output isn't Claude Code's stream-json ends by its exit code.
 - **More environment adapters.**
   - `nextjs`, `rails` and `dev-server` (any command): a dev server per checkout on its own port. `foreman workspace --port` records the port, the new **`foreman env start`** runs the server in the background with `PORT` (and `vars`, e.g. a per-checkout `DATABASE_URL`) set and waits until it listens, and `foreman env remove` stops it. Running servers are found with `lsof` on the recorded ports, so ones started by hand count too.
   - `neon`: a Neon database branch per checkout, its connection string written to an env file. `foreman tick` deletes branches whose checkout is gone. Needs `NEON_API_KEY`.

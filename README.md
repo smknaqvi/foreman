@@ -2,10 +2,10 @@
 
 Run a crew of coding agents on one GitHub repo, in parallel, without anyone merging what wasn't reviewed.
 
-- A **Coordinator** (a Claude Code session) picks issues, launches one **Builder** per issue in its own worktree and environment, reviews each PR and approves the exact commit it reviewed.
+- A **Coordinator** (an agent session: Claude Code, Codex, Cursor, Gemini CLI or another) picks issues, launches one **Builder** per issue in its own worktree and environment, reviews each PR and approves the exact commit it reviewed.
 - Each **Builder** takes its issue to a PR, waits for approval, then merges it through `foreman merge`. That command refuses anything that isn't exactly what was approved, up to date and green.
 - An **Observer** prints a line whenever something needs the Coordinator's attention.
-- **Guards** make the gated path the only path: a Claude Code hook blocks `gh pr merge`, merge API calls, writes to the base branch and hand-written approvals, and git's pre-push check refuses pushes to the base branch.
+- **Guards** make the gated path the only path: a hook in each agent tool (Claude Code, Codex, Cursor, Gemini CLI) blocks `gh pr merge`, merge API calls, writes to the base branch and hand-written approvals, and git's pre-push check refuses pushes to the base branch from any tool.
 - A **Watchdog** (optional, no AI) notices when every agent has stopped at a usage limit, merges what's approved and green, and starts a new Coordinator once the limit resets.
 - **Notifications** (optional) reach you on Slack, Discord or your phone when something needs a person: an issue labeled for a decision, a red base branch, a usage-limit stop, a Coordinator that finished.
 - A **dashboard** (optional, read-only) shows all of it in a browser, live.
@@ -17,7 +17,7 @@ Extracted from a real migration project, where it ran waves of 3–4 Builders th
 ```mermaid
 flowchart LR
     obs["<b>foreman observe</b><br/>run by the Coordinator<br/>under Monitor"]
-    coord["<b>Coordinator</b><br/>Claude Code session:<br/>picks issues, reviews, approves"]
+    coord["<b>Coordinator</b><br/>agent session:<br/>picks issues, reviews, approves"]
     bld["<b>Builders</b><br/>one agent per issue,<br/>own worktree and env port"]
     gh[("<b>GitHub</b><br/>issues, PRs,<br/>approval statuses, CI")]
     gate{{"<b>foreman merge</b><br/>approved at this commit?<br/>up to date? green?"}}
@@ -82,12 +82,28 @@ sequenceDiagram
 Needs Node 20+, git 2.38+, bash and the GitHub CLI (`gh auth login`).
 
 ```sh
-npm install --save-dev github:smknaqvi/foreman#v0.2.1    # pin a release tag; the package is @smknaqvi/foreman, the command foreman
-npx --no-install foreman init          # config, git hook, Claude Code guard, the two playbooks (--ci [--self-hosted <labels>], --conductor for more)
+npm install --save-dev github:smknaqvi/foreman#v0.3.0    # pin a release tag; the package is @smknaqvi/foreman, the command foreman
+npx --no-install foreman init          # config, git hook, merge guard, the two playbooks (--agents, --ci [--self-hosted <labels>], --conductor for more)
 npx --no-install foreman doctor        # checks it all works
 ```
 
-Then fill in `foreman.config.json`, create the labels `init` prints, and say in your AGENTS.md / CLAUDE.md which files each kind of work owns. Ask Claude Code to "coordinate the agents on milestone X".
+Then fill in `foreman.config.json`, create the labels `init` prints, and say in your AGENTS.md which files each kind of work owns and where the playbooks are. Ask your agent to "coordinate the agents on milestone X".
+
+### Any coding agent
+
+Everything foreman does is git, `gh`, a CLI and Markdown, so any agent tool can be the Coordinator or a Builder, and a crew can mix them.
+
+| | Claude Code | Codex | Cursor | Gemini CLI | Any other tool |
+|---|---|---|---|---|---|
+| Playbooks (`.claude/skills/*/SKILL.md`) | loaded as skills | read via AGENTS.md | read via AGENTS.md | read via AGENTS.md | read via AGENTS.md |
+| Merge guard hook | `.claude/settings.json` | `.codex/hooks.json` | `.cursor/hooks.json` | `.gemini/settings.json` | call `foreman guard --command "<cmd>"` from its hooks, if it has any |
+| git's pre-push check | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Watchdog sees usage limits | ✓ | after `staleMinutes` | after `staleMinutes` | after `staleMinutes` | after `staleMinutes` |
+
+- **`foreman init --agents claude,codex,cursor,gemini`** wires the guard into each tool's project hooks; without `--agents` it picks the tools the repo is already set up for (`.claude/settings.json`, or a `.codex/`, `.cursor/` or `.gemini/` folder), or Claude Code in a repo set up for none. Those settings are always risky paths. Every tool runs the same shim, `.claude/hooks/foreman-guard.mjs` (the folder name is historical; the playbooks live under `.claude/` too), which answers in that tool's format. `foreman doctor` lists the tools it's wired into, and `foreman guard --self-test` tests each one with its own payload, and fails if a tool the repo is set up for has lost its hook.
+- **Codex** runs a new or changed project hook only once someone trusts it: open Codex in the repo and approve it under `/hooks`.
+- **Say in AGENTS.md** which playbook to read for which task: tools other than Claude Code don't load `.claude/skills/` by themselves.
+- The playbooks name what a step needs from the tool (launch a background agent in its own worktree, message it, watch `foreman observe`, review a PR), then how Claude Code does it. Use your tool's equivalent.
 
 Run it as `npx --no-install foreman` (as the playbooks do), or from an npm script. A different npm package is also called `foreman`, and plain `npx foreman` in a checkout without dependencies installed would download and run that one.
 
@@ -101,7 +117,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `claim <issue> --branch <b> [--port <p>]` / `release <issue>` | Record or drop a Builder on an issue (a label plus a comment `status` reads back) |
 | `approve <PR> <sha>` | Approve the commit you reviewed. Refuses if the PR has moved on since |
 | `merge <PR> [--rebased-from <sha>]` | The only way in. See [How the gate works](#how-the-gate-works) |
-| `observe [--once]` | One line per event: PR opened or closed, checks finished, a preview deployment ready, base CI failed, Docker memory high. Meant for Claude Code's Monitor tool. Also sends [notifications](#notifications) |
+| `observe [--once]` | One line per event: PR opened or closed, checks finished, a preview deployment ready, base CI failed, Docker memory high. Meant to run in the background while the Coordinator works (Claude Code: the Monitor tool). Also sends [notifications](#notifications) |
 | `dashboard [--port <p>] [--open]` | The crew in a browser, live: what `status` shows plus a feed of what `observe` would print. See [Dashboard](#dashboard) |
 | `tick [--dry-run]` | The steps that need no judgement: rebase approved, green PRs onto the base (clean rebases only) and merge them through `merge`; remove orphaned environments. Never reviews or approves |
 | `watchdog install\|uninstall\|status\|pause\|unpause\|stop\|run` | Keeps the crew going after a usage limit. See [When every agent stops](#when-every-agent-stops) |
@@ -111,7 +127,8 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `workspace [--port <p>]` | Prepare a checkout: switch on the pre-push check, give its environment its port (`$CONDUCTOR_PORT` by default) |
 | `init [--force] [--ci [--self-hosted <labels>]] [--conductor]` | Set a repo up. Writes only what's missing. `--force` replaces foreman's own files but never a playbook you wrote. `--self-hosted`: the check runs on your own runner ([below](#running-the-checks-on-your-own-machine)) |
 | `doctor` | Tools, config, guards (including a live test of each), labels, required check |
-| `guard` | The Claude Code hook itself |
+| `guard [--agent claude\|codex\|cursor\|gemini]` | The merge guard hook itself: that tool's payload on stdin, its answer on stdout |
+| `guard --command "<cmd>" [--cwd <dir>]` | Check one command, for any other tool's hook: exit 2 and the reason on stderr when it's refused |
 | `guard --self-test` | The hook and the pre-push check refuse what they should. Needs no GitHub access, so CI can run it on every PR |
 
 ## Configuration
@@ -192,20 +209,20 @@ export default {
 
 ## When every agent stops
 
-A Claude Code session that hits a usage limit stops, and so do the Builders it launched. The work is all on GitHub, but nothing picks it up until someone opens a new session. The watchdog does that part without AI:
+An agent session that hits a usage limit stops, and so do the Builders it launched. The work is all on GitHub, but nothing picks it up until someone opens a new session. The watchdog does that part without AI:
 
 ```sh
 npx --no-install foreman watchdog install   # macOS: a launchd job; elsewhere it prints a cron line
 npx --no-install foreman watchdog status    # what it did, and what a round would do now
 ```
 
-Every `everyMinutes` a round runs. It does nothing while paused, while a Coordinator it started is still running, or when nothing is in flight (no claimed issue, no approved PR). Otherwise it looks at the Claude Code sessions working in this repo (their transcripts on this machine, in every worktree):
+Every `everyMinutes` a round runs. It does nothing while paused, while a Coordinator it started is still running, or when nothing is in flight (no claimed issue, no approved PR). Otherwise it looks at what agents in this repo are doing: Claude Code sessions' transcripts on this machine, in every worktree, and, for any tool, git activity in every worktree but the watchdog's own (HEAD moving, a tracked file changing; a person working counts too, on purpose):
 
 - **Agents are working:** nothing, except merging approved, green PRs nobody has touched for 10 minutes. Not even that while a Coordinator's `foreman observe` is running (it finished a round in the last 5 minutes, or 3 of its intervals): the Coordinator is waiting on checks and may be holding an approved PR back on purpose.
 - **The newest session stopped at a usage limit** ("You've hit your session limit · resets 1:50am"): it runs `foreman tick` right away (merging needs no AI, so that happens during the limit), and once the limit has reset it starts a Coordinator in the background in its own worktree (`watchdog.dir`, by default beside the main checkout): `claude -p` with a prompt to resume as Coordinator, finish only what's in flight, and run Builders in the foreground so the session lasts.
-- **Nothing for `staleMinutes`:** the same, if you set it (off by default: silence alone usually means a person is away, not that a limit hit).
+- **Nothing for `staleMinutes`:** the same, if you set it (off by default: silence alone usually means a person is away, not that a limit hit). **With a tool other than Claude Code this is the only trigger**, since only Claude Code's transcripts show limit stops: set it (60 is a reasonable start), and set `watchdog.command` to that tool's headless command, `{prompt}` standing for the prompt. Check your tool's own docs for the flags that run it unattended (for example `codex exec`, `gemini -p`). Put API keys it needs in `watchdog.env`.
 
-A Coordinator that hits the limit again just ends, and a later round tries again. One that ends normally isn't restarted until the work in flight changes, and at most `maxSessionsPerDay` start in a day. Its session id is recorded, so `claude --resume <id>` (from its worktree) carries on with it by hand. Each start and finish is a [notification](#notifications) (on macOS, a system notification even with none set up).
+A Coordinator that hits the limit again just ends, and a later round tries again. One that ends normally isn't restarted until the work in flight changes, and at most `maxSessionsPerDay` start in a day. With Claude Code its session id is recorded, so `claude --resume <id>` (from its worktree) carries on with it by hand; other tools' output is kept in the session log. Each start and finish is a [notification](#notifications) (on macOS, a system notification even with none set up).
 
 `foreman status` shows a running watchdog Coordinator; an interactive Coordinator shouldn't start alongside it (`watchdog stop` hands over). `watchdog pause` holds rounds, `uninstall` removes the job. State, log and session output are in `<git common dir>/foreman/watchdog/`.
 
@@ -260,7 +277,7 @@ It's **read-only** on purpose: approving means reviewing, which is the Coordinat
 3. **Up to date and green.** The PR must contain the current base. The required check must have actually passed: on the head, or on the approved commit for a clean rebase, unless a `staleCheckPaths` path changed since. No check may have failed on the head.
 4. **One at a time.** A lock shared by every worktree on the machine serializes merges.
 5. **No way around it.**
-   - The Claude Code hook reads each Bash command the way bash would. That includes quoting, heredocs, `$(...)`, `bash -c`, `eval`, `xargs`, `env`, `cd` and branch switches.
+   - The guard hook reads each shell command the way bash would. That includes quoting, heredocs, `$(...)`, `bash -c`, `eval`, `xargs`, `env`, `cd` and branch switches.
    - It blocks `gh pr merge`, merge and ref-writing API calls (REST and GraphQL), pushes to the base branch, `--no-verify`, switching off `core.hooksPath`, and writing the approval status by hand.
    - Git's pre-push check catches pushes to the base however they're typed.
 
@@ -316,8 +333,8 @@ While the runner is offline, runs wait as **queued** and start when it's back: t
 - **Guardrails, not security.** The guards stop accidental bypasses, not someone determined to get around them. Where GitHub branch protection is available, also make `approvalContext` and `requiredCheck` required status checks. The guards are then a second layer.
 - **The guard reads `foreman.config.json` from the agent's own checkout,** so a Builder that edits it changes what the guard protects locally. The config is always a risky path, so such a PR gets the stricter review, and `merge` itself runs with whatever config the merging checkout has. A broken config makes the guard refuse every `gh` and `git push` command until it's fixed.
 - **The hook refuses `gh` and `git push` whenever it can't trust the guard:** when foreman isn't installed, when the installed version isn't the one `package-lock.json` pins (run `npm install` after a rebase that bumped it), or when the guard fails to load.
-- **The command guard is Claude Code only.** Other agents get the git pre-push check and the commands, but nothing stops them typing `gh pr merge`.
-- **The watchdog reads Claude Code's transcripts** (`~/.claude/projects/`) to tell a usage-limit stop from agents that are just waiting. They're Claude Code's own files, not an API: if their shape changes it stops seeing limits (set `staleMinutes` as a fallback). It starts Claude with `--permission-mode bypassPermissions` (`watchdog.command`), because nobody is there to approve tools; the merge guard hook still applies.
+- **The command guard needs the tool's hooks.** Claude Code, Codex, Cursor and Gemini CLI get it (`init --agents`). A tool without hooks gets the git pre-push check and the commands, but nothing stops it typing `gh pr merge`. The hook finds the shim from the checkout's root (Claude Code's `$CLAUDE_PROJECT_DIR`, Gemini CLI's `$GEMINI_PROJECT_DIR`, otherwise `git rev-parse --show-toplevel` from the session's folder, or Cursor's project root): a session started outside the checkout, or inside a submodule, may not find it. Each tool's hooks have their own gaps: Codex says some specialized tool paths skip them, and Cursor and Gemini CLI let a command run if a hook crashes (so does foreman's: a bug in the guard mustn't stall every command).
+- **The watchdog reads Claude Code's transcripts** (`~/.claude/projects/`) to tell a usage-limit stop from agents that are just waiting; with other tools it can only go by `staleMinutes`. They're Claude Code's own files, not an API: if their shape changes it stops seeing limits (set `staleMinutes` as a fallback). It starts Claude with `--permission-mode bypassPermissions` (`watchdog.command`), because nobody is there to approve tools; the merge guard hook still applies.
 - **GitHub only.**
 
 ## Upgrading

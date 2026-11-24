@@ -149,3 +149,66 @@ test('guard --self-test: passes once init has run, fails when the pre-push check
 	writeFileSync(join(dir, '.githooks/pre-push'), '#!/usr/bin/env bash\nexit 0\n');
 	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}pre-push refuses main/.test(e.stdout));
 });
+
+test('init --agents wires the guard into each tool\'s own hook settings, once', () => {
+	const dir = repo();
+	cli(dir, 'init', '--agents', 'claude,codex,cursor,gemini');
+	const read = (f) => JSON.parse(readFileSync(join(dir, f), 'utf8'));
+	assert.equal(read('.claude/settings.json').hooks.PreToolUse[0].matcher, 'Bash');
+	const codex = read('.codex/hooks.json').hooks.PreToolUse[0];
+	assert.equal(codex.matcher, 'Bash');
+	assert.match(codex.hooks[0].command, /git rev-parse --show-toplevel.*--agent codex$/);
+	const cursor = read('.cursor/hooks.json');
+	assert.equal(cursor.version, 1);
+	assert.match(cursor.hooks.beforeShellExecution[0].command, /^node \.claude\/hooks\/foreman-guard\.mjs --agent cursor$/);
+	const gemini = read('.gemini/settings.json').hooks.BeforeTool[0];
+	assert.equal(gemini.matcher, 'run_shell_command');
+	assert.equal(gemini.hooks[0].timeout, 10000, 'Gemini CLI counts milliseconds');
+	cli(dir, 'init', '--agents', 'codex,cursor,gemini');
+	assert.equal(read('.codex/hooks.json').hooks.PreToolUse.length, 1, 'added once');
+	assert.equal(read('.cursor/hooks.json').hooks.beforeShellExecution.length, 1, 'added once');
+	assert.equal(read('.gemini/settings.json').hooks.BeforeTool.length, 1, 'added once');
+	assert.throws(() => cli(dir, 'init', '--agents', 'claude,windsurf'), (e) => /Unknown agent tool windsurf/.test(e.stderr));
+
+	// Every wired tool passes the self-test, each through its own payload and answer.
+	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
+	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
+	const out = cli(dir, 'guard', '--self-test');
+	assert.match(out, /23\/23 passed/);
+	assert.match(out, /Cursor: blocks gh pr merge/);
+});
+
+test('init without --agents: the tools the repo is set up for, or Claude Code', () => {
+	const fresh = repo();
+	cli(fresh, 'init');
+	assert.ok(existsSync(join(fresh, '.claude/settings.json')), 'a repo set up for no tool gets Claude Code');
+	assert.ok(!existsSync(join(fresh, '.cursor/hooks.json')));
+
+	const both = repo();
+	mkdirSync(join(both, '.cursor'));
+	mkdirSync(join(both, '.claude'));
+	writeFileSync(join(both, '.claude/settings.json'), '{}');
+	cli(both, 'init');
+	assert.ok(existsSync(join(both, '.cursor/hooks.json')));
+	assert.match(readFileSync(join(both, '.claude/settings.json'), 'utf8'), /foreman-guard/);
+	assert.ok(!existsSync(join(both, '.codex/hooks.json')));
+
+	const codexOnly = repo();
+	cli(codexOnly, 'init', '--agents', 'codex');
+	cli(codexOnly, 'init', '--force');
+	assert.ok(!existsSync(join(codexOnly, '.claude/settings.json')), 'refreshing a Codex-only repo adds no Claude Code hook');
+	assert.ok(existsSync(join(codexOnly, '.codex/hooks.json')));
+
+	const typo = repo();
+	assert.throws(() => cli(typo, 'init', '--agents', 'claud'), /Unknown agent tool claud/);
+	assert.ok(!existsSync(join(typo, 'foreman.config.json')), 'an unknown tool stops init before it writes anything');
+});
+
+test('guard --self-test fails when a tool the repo is set up for lost its hook, even with others wired', () => {
+	const dir = repo();
+	cli(dir, 'init', '--agents', 'claude,cursor');
+	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
+	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
+	writeFileSync(join(dir, '.claude/settings.json'), '{}');
+	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}every tool set up here runs it \(missing: \.claude\/settings\.json\)/.test(e.stdout));
+});

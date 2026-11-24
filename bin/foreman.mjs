@@ -47,10 +47,17 @@ Builders
                                           up to date and green
 
 Setup
-  init [--force] [--ci [--self-hosted <labels>]] [--conductor]
-                                          set a repo up (config, hooks, guard, playbooks, CI)
+  init [--force] [--agents <tools>] [--ci [--self-hosted <labels>]] [--conductor]
+                                          set a repo up (config, hooks, guard, playbooks, CI). --agents:
+                                          which tools get the merge guard, from claude,codex,cursor,gemini
+                                          (default: claude plus those whose folder exists)
   doctor                                  check this checkout is ready
-  guard                                   the Claude Code hook itself (reads the hook payload on stdin)
+  guard [--agent claude|codex|cursor|gemini]
+                                          the merge guard hook itself (reads that tool's hook payload on
+                                          stdin; claude by default)
+  guard --command "<command>" [--cwd <dir>]
+                                          check one command, for any other tool's hook: exit 2 and the reason
+                                          on stderr when it's refused
   guard --self-test                       the hook and pre-push check refuse what they should (no GitHub
                                           needed: for CI)
 `;
@@ -126,15 +133,18 @@ async function main() {
 			return (await import('../lib/crew.mjs')).workspace(loadConfig(), values);
 		}
 		case 'init': {
-			const { values } = flags({ force: { type: 'boolean' }, ci: { type: 'boolean' }, 'self-hosted': { type: 'string' }, conductor: { type: 'boolean' } });
+			const { values } = flags({ force: { type: 'boolean' }, ci: { type: 'boolean' }, 'self-hosted': { type: 'string' }, conductor: { type: 'boolean' }, agents: { type: 'string' } });
 			return (await import('../lib/init.mjs')).init(process.cwd(), values);
 		}
 		case 'doctor':
 			return (await import('../lib/doctor.mjs')).doctor(process.cwd());
 		case 'guard':
 			if (rest.includes('--self-test')) return (await import('../lib/selftest.mjs')).selfTest(loadConfig());
-			(await import('../lib/guard.mjs')).runHook();
-			return 0;
+			{
+				const { values } = flags({ agent: { type: 'string' }, command: { type: 'string' }, cwd: { type: 'string' }, 'self-test': { type: 'boolean' } });
+				(await import('../lib/guard.mjs')).runHook(values);
+				return process.exitCode ?? 0;
+			}
 		case undefined:
 		case 'help':
 		case '--help':
