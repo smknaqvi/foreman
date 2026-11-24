@@ -1,6 +1,6 @@
 ---
 name: work-an-issue
-description: Take a GitHub issue from start to pull request while other agents work in parallel: read the issue, scope the change, branch, build, verify, collect plan updates, open a PR that closes the issue, and merge it through foreman once the Coordinator approves. Use when asked to "work on #N", "pick up the next issue", or to finish a task as a PR.
+description: Take a GitHub issue from start to pull request while other agents work in parallel: read the issue and the shared memory, scope the change, branch, build, verify, collect plan and memory updates, open a PR that closes the issue, and merge it through foreman once the Coordinator approves. Use when asked to "work on #N", "pick up the next issue", or to finish a task as a PR.
 ---
 
 <!-- Managed by foreman (npx --no-install foreman init --force replaces it). Put project-specific guidance in AGENTS.md or a playbook listed in foreman.config.json. -->
@@ -13,6 +13,7 @@ gh issue view <N> --comments
 git fetch origin && git rebase origin/<base>     # the base branch in foreman.config.json
 ```
 - Read the issue's checklist and "Done when", AGENTS.md, and every playbook listed in `foreman.config.json`.
+- **Read the shared memory:** `memory/MEMORY.md` (the folder is `memory.dir` in `foreman.config.json`), then every note that touches your work. They hold what earlier agents learned: gotchas, decisions and their reasons, where things live, what the team prefers. `npx --no-install foreman memory list` shows them all on one screen.
 - Blocked on people (files, decisions, accounts)? Do what you can, leave clear placeholders, and comment on the issue with exactly what's needed, in plain language. Don't invent content.
 - Check the open PRs (`gh pr list`) for work touching the same files.
 
@@ -23,6 +24,7 @@ git fetch origin && git rebase origin/<base>     # the base branch in foreman.co
 ## Before the PR
 - Run the repo's `verifyCommand` (in `foreman.config.json`) and whatever the playbooks add.
 - Don't edit the plan file (`planFile`): parallel agents would conflict. Collect changes for the PR's "Plan updates" section.
+- **Never edit the memory folder** (`memory/`). Only the Coordinator does, in its own memory PRs: `foreman merge` refuses yours if it changes it. Collect what future agents should know for the PR's "Memory updates" section instead. Your agent tool's own memory (Claude Code's per-user memory folder, say) is fine for you, but no one else can read it: what the next agent needs goes in the PR.
 - `git fetch origin && git rebase origin/<base>` (then `npm install` if `package-lock.json` changed), and verify again.
 
 ## PR
@@ -37,6 +39,7 @@ PR body:
 - What's left, and anything needing people.
 - Edits to shared hotspots.
 - **Plan updates**: done items, new decisions and findings, written so the Coordinator can paste them in.
+- **Memory updates**: durable facts a future agent would need and couldn't easily see from the code, one line each: a gotcha that cost time, a decision and its reason, where something lives, what the team asked for. Mark each one **new**, **correct `<slug>`** (a note that's now wrong, and what's true instead) or **delete `<slug>`** (a note that no longer holds). Nothing private (secrets, where keys live). Write "none" if there's nothing. Use a `## Memory updates` heading: the Coordinator collects these with `npx --no-install foreman memory updates`.
 
 Watch the checks (`gh pr checks --watch`) and fix any failure. Checks that stay **queued** are waiting for a runner, not failing: don't re-push. Then report back and **wait for the Coordinator's review**.
 

@@ -32,7 +32,7 @@ test('config: defaults without a file, merged with one, found from a subfolder',
 	assert.equal(c.baseBranch, 'trunk');
 	assert.equal(c.labels.working, 'busy');
 	assert.equal(c.labels.needsInput, 'needs team input', 'nested defaults survive a partial override');
-	assert.deepEqual(c.riskyPaths, [...RISKY_ALWAYS, 'deploy/']);
+	assert.deepEqual(c.riskyPaths, [...RISKY_ALWAYS, 'deploy/'], 'no memory on the base yet: its folder isn\'t risky');
 });
 
 test('config: explains what is wrong', () => {

@@ -14,11 +14,27 @@ Coordinator
   status                                  where everything stands (CI, Builders, PRs, approvals, environments)
   claim <issue> --branch <b> [--port <p>] record that a Builder is on an issue
   release <issue>                         un-mark an abandoned issue
-  approve <PR> <reviewed sha>             approve exactly the commit you reviewed
+  approve <PR> <reviewed sha> [--memory]  approve exactly the commit you reviewed (--memory: your own memory
+                                          PR, the only kind foreman merge lets change memory/)
   observe [--once]                        print a line whenever something needs attention (run under Monitor)
   dashboard [--port <p>] [--open]         the crew in a browser, live (read-only; 127.0.0.1:4477)
   tick [--dry-run]                        what needs no judgement: merge approved, green PRs (clean rebases
                                           only) and remove orphaned environments
+
+Shared memory (durable facts every agent reads, in memory/; only the Coordinator's memory PRs change it)
+  memory list                             one line per note: slug, type, description
+  memory check                            every note parses and is listed once in memory/MEMORY.md (exit 1
+                                          if not); warns about broken [[links]], near-duplicates, repo paths
+                                          that no longer exist and notes not updated in 180 days
+  memory updates [--since <date|sha>]     the "Memory updates" sections of merged PRs that no memory PR has
+                                          applied yet ("Applies memory updates from #12, #40" in its
+                                          description), for the Coordinator to apply
+  memory add <slug> --description "<one line>" [--type project|decision|reference|feedback|user]
+             [--title <index title>] [--source "PR #12"]
+                                          a new note and its index line
+  memory import <folder> [--only <slug,slug>]
+                                          copy notes from a folder in the same format (a Claude Code memory
+                                          folder): skips slugs already here, never changes the source
 
 When every agent stops (a usage limit)
   watchdog install|uninstall              run a round every few minutes (launchd on macOS; prints a cron line
@@ -110,6 +126,10 @@ async function main() {
 		case 'notify': {
 			const { values, positionals } = flags({ server: { type: 'string' }, token: { type: 'string' } });
 			return (await import('../lib/notify.mjs')).command(loadConfig(), positionals, values);
+		}
+		case 'memory': {
+			const { values, positionals } = flags({ since: { type: 'string' }, description: { type: 'string' }, type: { type: 'string' }, title: { type: 'string' }, source: { type: 'string' }, only: { type: 'string' } });
+			return (await import('../lib/memory.mjs')).command(loadConfig(), positionals, values);
 		}
 		case 'dashboard': {
 			const { values } = flags({ port: { type: 'string' }, open: { type: 'boolean' } });

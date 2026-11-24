@@ -4,7 +4,12 @@
 #      or on the pre-rebase commit given with --rebased-from, provided replaying that approved change onto
 #      the current base yields exactly the head's files (so only a clean rebase passes),
 #   2. it is up to date with the base branch,
-#   3. the required check passed, and nothing else failed. Not waited for when every changed file matches
+#   3. a PR that changes the shared memory (memory.dir, read from the base branch's foreman.config.json so
+#      a PR can't switch the rule off for itself) also carries the Coordinator's memory approval
+#      (foreman approve --memory: the status "<approval context>-memory") on the approved commit. Builders
+#      propose memory changes in their PR's "Memory updates" section instead. The rule holds once the base
+#      has <memory.dir>/MEMORY.md, or for a PR that changes that index (the one setting the memory up),
+#   4. the required check passed, and nothing else failed. Not waited for when every changed file matches
 #      $FOREMAN_DOCS_ONLY, or when it is a clean rebase of an approved commit whose own required check
 #      passed (the base branch's CI still runs after the merge) and none of $FOREMAN_STALE_PATHS changed
 #      on the base since that commit.
@@ -18,6 +23,8 @@ context="${FOREMAN_APPROVAL_CONTEXT:-coordinator-review}"
 required="${FOREMAN_REQUIRED_CHECK-verify}"
 stale_paths="${FOREMAN_STALE_PATHS:-}" # One per line.
 docs_only="${FOREMAN_DOCS_ONLY-\.md$}" # Empty: no PR counts as docs-only.
+memory_context="$context-memory" # The Coordinator's memory approval (foreman approve --memory).
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 lock_wait="${FOREMAN_LOCK_WAIT:-60}" # Tries, 5 seconds apart.
 
 pr="${1:?usage: foreman merge <PR number> [--rebased-from <sha>]}"
@@ -25,9 +32,10 @@ rebased_from=""
 [ "${2:-}" = "--rebased-from" ] && rebased_from="${3:?--rebased-from needs the approved commit sha}"
 repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 
-approved() { # Does commit $1 carry the Coordinator's approval?
-	[ "$(gh api "repos/$repo/commits/$1/statuses" --jq "map(select(.context==\"$context\")) | first | .state // \"\"")" = "success" ]
+has_status() { # Does commit $1 carry a successful status $2 (the newest one with that context)?
+	[ "$(gh api "repos/$repo/commits/$1/statuses" --jq "map(select(.context==\"$2\")) | first | .state // \"\"")" = "success" ]
 }
+approved() { has_status "$1" "$context"; } # The Coordinator's approval.
 replayed_tree() { # Tree of "current base + the change approved at commit $1" (3-way merge, no worktree; git 2.38+).
 	local out
 	out=$(git merge-tree --write-tree "origin/$base" "$1" 2>/dev/null) || return 1 # Conflicts: not a clean rebase.
@@ -57,7 +65,15 @@ if ! git merge-base --is-ancestor "origin/$base" "$head"; then
 	exit 1
 fi
 
+# The PR's own changes (head contains the base), NUL-separated so every name arrives as it is: without
+# -z and core.quotePath=false, git would quote "memory/café.md" and it would slip past the memory rule.
+changed=()
+while IFS= read -r -d '' f; do changed+=("$f"); done < <(git -c core.quotePath=false diff --name-only --no-renames -z "origin/$base" "$head")
+files=""
+[ ${#changed[@]} -eq 0 ] || files=$(printf '%s\n' "${changed[@]}")
+
 checked="$head" # The commit whose checks must be green.
+approved_at="$head" # The commit the Coordinator approved (the pre-rebase one, for a clean rebase).
 # 2. Approval of this exact change (the base is now an ancestor of head, so replaying onto it is exact).
 if ! approved "$head"; then
 	if [ -n "$rebased_from" ] && approved "$rebased_from"; then
@@ -69,6 +85,7 @@ if ! approved "$head"; then
 			gh api "repos/$repo/statuses/$head" -f state=success -f context="$context" \
 				-f description="Approval carried over: clean rebase of ${rebased_from:0:7}" >/dev/null
 			echo "Approval carried over from ${rebased_from:0:7} (clean rebase: identical to the approved change on current $base)."
+			approved_at="$rebased_from"
 			checked="$rebased_from" # Its checks already ran on the approved change.
 			if [ -z "$required" ]; then
 				checked="$head" # No named check to reuse: wait for the head's own.
@@ -91,10 +108,42 @@ if ! approved "$head"; then
 	fi
 fi
 
-# 3. The required check must have run and passed (not just "nothing failed yet"): on this exact commit, or
+# 3. Only the Coordinator's memory PRs change the shared memory. Checked before anything that can skip a
+#    step: memory notes are Markdown, so a docs-only PR would otherwise skip its checks and merge. The folder
+#    comes from the base's config, so a PR can't switch the rule off for itself (no config there: the
+#    default; one that doesn't parse: the default too).
+memory_dir=$({ git show "origin/$base:foreman.config.json" 2>/dev/null || true; } | node "$here/memory-dir.mjs")
+memory_files=()
+if [ -n "$memory_dir" ]; then
+	for f in ${changed[@]+"${changed[@]}"}; do
+		case "$f" in "$memory_dir"/*) memory_files+=("$f") ;; esac
+	done
+fi
+if [ ${#memory_files[@]} -gt 0 ]; then
+	# Once the base has the index; or for the PR that adds it. A folder of that name that isn't a foreman
+	# memory (no index) is left alone.
+	guarded=0
+	if git cat-file -e "origin/$base:$memory_dir/MEMORY.md" 2>/dev/null; then guarded=1; fi
+	for f in "${memory_files[@]}"; do
+		if [ "$f" = "$memory_dir/MEMORY.md" ]; then guarded=1; fi
+	done
+	if [ "$guarded" = 1 ]; then
+		if ! has_status "$approved_at" "$memory_context"; then
+			echo "PR #$pr changes ${memory_files[0]}$([ ${#memory_files[@]} -gt 1 ] && echo " and $(( ${#memory_files[@]} - 1 )) more")." >&2
+			echo "This PR changes $memory_dir/: only the Coordinator's memory PRs merge it (approved with foreman approve --memory). Put it in the PR's 'Memory updates' section instead." >&2
+			exit 1
+		fi
+		if [ "$approved_at" != "$head" ]; then
+			gh api "repos/$repo/statuses/$head" -f state=success -f context="$memory_context" \
+				-f description="Memory approval carried over: clean rebase of ${approved_at:0:7}" >/dev/null
+		fi
+	fi
+fi
+
+# 4. The required check must have run and passed (not just "nothing failed yet"): on this exact commit, or
 #    on the approved commit for a clean rebase. On the head itself, every other check must be green too
 #    (gh exits non-zero if any check failed or is pending). Docs-only PRs skip this.
-files=$(git diff --name-only --no-renames "origin/$base" "$head") # Captured first: grep -q exiting early must not count.
+# $files was captured above, before grep: grep -q exiting early must not count.
 if [ -n "$files" ] && [ -n "$docs_only" ]; then
 	rc=0; grep -qvE -- "$docs_only" <<<"$files" || rc=$? # 1: every file matched. 2: a bad pattern, which must not count.
 	if [ "$rc" = 1 ]; then

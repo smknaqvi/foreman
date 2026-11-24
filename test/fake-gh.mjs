@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
  * A stand-in for the GitHub CLI, for test/merge.test.mjs. It answers exactly the calls scripts/merge.sh
- * makes, from a JSON state file ($FAKE_GH_STATE) the test controls, and records approvals and merges there.
- *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], verify: { sha: conclusion },
- *     failed: { sha: "names" }, checksPass, merged, origin? }
+ * makes (and the merged-PR list `foreman memory updates` reads), from a JSON state file ($FAKE_GH_STATE) the
+ * test controls, and records approvals and merges there.
+ *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], memoryApproved?: [sha],
+ *     verify: { sha: conclusion },
+ *     failed: { sha: "names" }, checksPass, merged, origin?, mergedPrs?: [{ number, title, body, mergedAt, headRefName }] }
+ * `pr list` calls are recorded in `calls`, so a test can check what was asked.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -23,8 +26,13 @@ if (a === 'repo' && b === 'view') out(s.repo);
 else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
 	let m;
-	if ((m = ep.match(/commits\/(\w+)\/statuses$/))) out(s.approved.includes(m[1]) ? 'success' : '');
-	else if ((m = ep.match(/\/statuses\/(\w+)$/))) { s.approved.push(m[1]); save(); }
+	// Two approvals: the Coordinator's (approved) and its memory approval (a context ending in -memory).
+	const list = (ctx) => (/-memory$/.test(ctx) ? (s.memoryApproved ??= []) : s.approved);
+	const field = (name) => args.flatMap((x, i) => (args[i - 1] === '-f' && x.startsWith(`${name}=`) ? [x.slice(name.length + 1)] : []))[0] ?? '';
+	if ((m = ep.match(/commits\/(\w+)\/statuses$/))) {
+		const ctx = args[args.indexOf('--jq') + 1].match(/\.context=="([^"]+)"/)?.[1] ?? '';
+		out(list(ctx).includes(m[1]) ? 'success' : '');
+	} else if ((m = ep.match(/\/statuses\/(\w+)$/))) { list(field('context')).push(m[1]); save(); }
 	else if ((m = ep.match(/commits\/(\w+)\/check-runs$/)) && args.includes('-f')) {
 		const name = args[args.indexOf('-f') + 1].replace(/^check_name=/, '');
 		out(name === (s.checkName ?? 'verify') ? s.verify[m[1]] ?? '' : '');
@@ -33,8 +41,12 @@ else if (a === 'api') {
 } else if (a === 'pr' && b === 'view') {
 	const json = args[args.indexOf('--json') + 1];
 	if (json === 'state') out(s.merged ? 'MERGED' : s.pr.state);
-	else if (json === 'headRefOid') out(JSON.stringify({ headRefOid: s.pr.head }));
+	else if (json === 'headRefOid') out(args.includes('--jq') ? s.pr.head : JSON.stringify({ headRefOid: s.pr.head }));
 	else out(`${s.pr.state} ${s.pr.isDraft} ${s.pr.head} ${s.pr.mergeable}`);
+} else if (a === 'pr' && b === 'list') {
+	s.calls = [...(s.calls ?? []), args.join(' ')];
+	save();
+	out(JSON.stringify(s.mergedPrs ?? []));
 } else if (a === 'pr' && b === 'checks') process.exit(s.checksPass ? 0 : 1);
 else if (a === 'pr' && b === 'merge') {
 	const head = args[args.indexOf('--match-head-commit') + 1];
