@@ -268,8 +268,9 @@ function tickRepo(featureFile) {
 test('tick: rebases an approved PR onto the base and merges it through the gate', async () => {
 	const t = tickRepo('app.txt');
 	const said = [];
-	const ok = await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m));
-	assert.equal(ok, true, said.join('\n'));
+	const { merged, rebased } = await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m));
+	assert.equal(merged, true, said.join('\n'));
+	assert.equal(rebased, t.branch());
 	assert.notEqual(t.branch(), t.pr, 'the rebased branch was pushed');
 	assert.equal(t.state().merged, true);
 	assert.ok(t.state().approved.includes(t.branch()), 'the approval was carried over to the rebased commit');
@@ -278,7 +279,7 @@ test('tick: rebases an approved PR onto the base and merges it through the gate'
 test('tick: leaves a PR that does not rebase cleanly alone', async () => {
 	const t = tickRepo('other.txt'); // Main changed the same file.
 	const said = [];
-	assert.equal(await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m)), false);
+	assert.deepEqual(await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m)), { merged: false, rebased: '' });
 	assert.match(said.join('\n'), /doesn't rebase cleanly/);
 	assert.equal(t.branch(), t.pr, 'the branch is untouched');
 	assert.equal(t.state().merged, false);
@@ -309,14 +310,19 @@ test('watchdog stop never signals a process that only shares the recorded pid', 
 	assert.match(out, /No Coordinator started by the watchdog is running/);
 });
 
-test('baseFailing: a later hand-started run doesn\'t hide a failed push run', async () => {
-	const { baseFailing } = await import('../lib/state.mjs');
-	const runs = [
-		{ workflowName: 'Deploy', event: 'workflow_dispatch', status: 'completed', conclusion: 'success' },
-		{ workflowName: 'Deploy', event: 'push', status: 'completed', conclusion: 'failure' },
-	];
-	const latest = (list) => [...new Map([...list].reverse().map((r) => [r.workflowName, r])).values()].reverse();
-	assert.equal(baseFailing({ runs: latest(runs), pushRuns: latest(runs.filter((r) => r.event === 'push')) }).length, 1);
+test('baseWorkflows and baseHold: which workflows hold merges, and why the base holds them', async () => {
+	const { baseHold, baseWorkflows } = await import('../lib/state.mjs');
+	const config = { requiredCheck: 'verify', baseWorkflows: [], baseBranch: 'main' };
+	const run = (workflowName, conclusion) => ({ workflowName, event: 'push', status: 'completed', conclusion });
+	assert.match(baseWorkflows(config, { list: [{ name: 'Verify' }, { name: 'Deploy POC' }] }).why, /^Verify \(the workflow named like verify\)$/);
+	assert.deepEqual(baseWorkflows({ ...config, baseWorkflows: ['CI'] }, { error: 'x' }).names, ['CI'], 'baseWorkflows needs no list');
+	assert.equal(baseWorkflows(config, { list: [{ name: 'CI' }] }).all, true, 'none named like the check: every push run');
+	assert.match(baseWorkflows(config, { error: 'HTTP 502' }).error, /couldn't list the repo's workflows \(HTTP 502\)/, "an error isn't 'every workflow'");
+	assert.equal(baseHold(config, { runs: [run('Verify', 'success')], unknown: [], error: '' }), '');
+	assert.equal(baseHold(config, { runs: [run('Verify', 'skipped')], unknown: [], error: '' }), '', 'skipped passes');
+	assert.match(baseHold(config, { runs: [run('Verify', 'failure')], unknown: [], error: '' }), /failing \(Verify\)/);
+	assert.match(baseHold(config, { runs: [], unknown: ['Verify'], error: '' }), /unknown: Verify has no push or hand-started run/);
+	assert.match(baseHold(config, { runs: [], unknown: [], error: 'boom' }), /can't be told: boom/);
 });
 
 test('prepare: keeps an earlier Coordinator\'s leftovers on a branch, moves to the latest base, survives a deleted folder', async () => {

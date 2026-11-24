@@ -87,6 +87,15 @@ test('merges an approved PR whose required check passed', () => {
 	assert.equal(r.merged, true, r.out);
 });
 
+test('a required check that was skipped or neutral passes (lib/config.mjs PASSING); one that failed does not', () => {
+	for (const [conclusion, merged] of [['skipped', true], ['neutral', true], ['failure', false], ['cancelled', false]]) {
+		const t = setup();
+		t.state.approved.push(t.pr); t.state.verify[t.pr] = conclusion; t.save();
+		const r = t.merge([]);
+		assert.equal(r.merged, merged, `${conclusion}: ${r.out}`);
+	}
+});
+
 test('waits until the required check has passed, not just "nothing failed yet"', () => {
 	const t = setup();
 	t.state.approved.push(t.pr); t.save();
