@@ -37,7 +37,7 @@ if [ "$memory" = 1 ]; then
 	# The memory approval first: if the next call fails, the PR has no approval at all rather than half of one
 	# (a memory PR with only the main approval would be refused at merge, and look done).
 	gh api "repos/{owner}/{repo}/statuses/$head" -f state=success -f context="$context-memory" \
-		-f description="Memory change approved by the Coordinator" >/dev/null
+		-f description="Memory approved by foreman approve" >/dev/null # foreman merge checks this wording.
 fi
 gh api "repos/{owner}/{repo}/statuses/$head" -f state=success -f context="$context" \
 	-f description="Approved after review" >/dev/null

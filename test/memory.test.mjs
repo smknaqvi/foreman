@@ -67,6 +67,14 @@ test('parseNote reads foreman\'s form and Claude Code\'s nested metadata.type, w
 	assert.equal(folded.data.metadata.note, 'line one\nline two');
 	assert.equal(folded.body, 'Body\n');
 	assert.equal(parseNote('---\ndescription: >\n  one\n\n  two\n---\n').description, 'one\ntwo', 'a blank line in a folded value is a line break');
+	// Nested to any depth: Claude Code's metadata with a tags list, mappings in lists, lists at the key's indent.
+	const deep = parseNote('---\nname: d\ndescription: Deep\nmetadata:\n  type: user\n  tags:\n    - deploy\n    - cache\n  origin:\n    tool:\n      name: claude\n  people:\n    - name: A\n      role: lead\n    - B\naliases:\n- one\n- two\nupdated: 2026-11-01\n---\nBody\n');
+	assert.equal(deep.type, 'user');
+	assert.deepEqual(deep.data.metadata.tags, ['deploy', 'cache']);
+	assert.equal(deep.data.metadata.origin.tool.name, 'claude');
+	assert.deepEqual(deep.data.metadata.people, [{ name: 'A', role: 'lead' }, 'B']);
+	assert.deepEqual(deep.data.aliases, ['one', 'two']);
+	assert.equal(deep.updated, '2026-11-01');
 
 	// What foreman writes reads back the same, including values plain YAML would cut short.
 	const text = formatNote({ name: 'n', description: 'Ports: from 56000 # not a comment', type: 'reference', updated: '2026-11-24', source: 'PR #3' }, 'Body.');
@@ -224,6 +232,9 @@ test('memorySection: the "Memory updates" section of a PR body, in each way it i
 	assert.equal(memorySection('- **Memory updates**:\n  - **new** indented, bold\n- **new** unindented, bold\n- **correct `a`**: also an update\n- **Hotspots**: none\n'),
 		'  - **new** indented, bold\n- **new** unindented, bold\n- **correct `a`**: also an update');
 	assert.equal(memorySection('**Memory updates**\n\n- new: one\n- new: two\n\n🤖 Generated with Claude Code\n'), '- new: one\n- new: two');
+	// Bold titles with _ or * in them end a section like any other.
+	assert.equal(memorySection('- **Memory updates**: new: the cache\n- **Plan updates for my_db**: done\n'), 'new: the cache');
+	assert.equal(memorySection('**Memory updates**\n- new: the cache\n\n**Plan updates for my_db**\n- done\n'), '- new: the cache');
 	assert.equal(memorySection('### Memory Updates:\nnew: the cache\n---\nfooter'), 'new: the cache');
 	for (const none of ['## Memory updates\nnone\n', '- **Memory updates**: None.\n', '## Memory updates\n\n_n/a_\n', '## Memory updates\n\n## Plan updates\nx', 'No section here.', 'Memory updates go in the PR description.', '']) assert.equal(memorySection(none), '', JSON.stringify(none));
 	assert.deepEqual([...appliedIn('Memory PR.\n\nApplies memory updates from #12, #40 and #7.\n- **Applies memory updates from**: #3\n')], [12, 40, 7, 3]);
@@ -266,7 +277,7 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	assert.match(r.out, /Applies memory updates from #2, #5, #7/);
 	assert.match(r.out, /foreman approve <PR> <sha> --memory/);
 	assert.doesNotMatch(r.out, /warn/);
-	assert.match(JSON.parse(readFileSync(stateFile, 'utf8')).calls.at(-1), /--state merged --base main --limit 200 .*--search merged:>=2026-03-01/);
+	assert.match(JSON.parse(readFileSync(stateFile, 'utf8')).calls.at(-1), /--state merged --base main --limit 200 .*--search merged:>=2026-02-28/);
 
 	const since = cli(dir, ['memory', 'updates', '--since', '2026-03-04T12:00:00Z'], env);
 	assert.match(since.out, /PR #5 /);
@@ -286,6 +297,36 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	const none = cli(fresh, ['memory', 'updates'], env);
 	assert.match(none.out, /since the start \(main has no memory\/MEMORY\.md yet\)/);
 	assert.doesNotMatch(JSON.parse(readFileSync(stateFile, 'utf8')).calls.at(-1), /--search/);
+});
+
+test('memory updates: the window is decided by ancestry, not by clocks', () => {
+	const dir = repo();
+	const git = (...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' }).trim();
+	const commit = (files) => { write(dir, files); git('add', '-A'); git('commit', '-q', '-m', 'c'); return git('rev-parse', 'HEAD'); };
+	commit({ 'README.md': 'x\n' });
+	const before = commit({ 'app.txt': '1\n' }); // PR #20's merge, before the memory existed...
+	commit({ 'memory/MEMORY.md': index() });
+	const after = commit({ 'app.txt': '2\n' }); // ...and PR #21's, after.
+	const stateFile = join(dir, '.git/gh-state.json');
+	const pr = (number, mergedAt, oid) => ({ number, title: `PR ${number}`, body: `## Memory updates\n- new: from ${number}`, mergedAt, mergeCommit: { oid } });
+	// Clocks that lie: #20 says it merged later than #21.
+	writeFileSync(stateFile, JSON.stringify({ repo: 'o/r', pr: {}, mergedPrs: [pr(20, '2099-01-01T00:00:00Z', before), pr(21, '2000-01-01T00:00:00Z', after)] }));
+	const out = cli(dir, ['memory', 'updates'], { PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: stateFile }).out;
+	assert.match(out, /PR #21 /);
+	assert.doesNotMatch(out, /PR #20 /);
+});
+
+test('ruleFor: falls back to the config\'s own folder, and refreshes when the base moves', async () => {
+	const { ruleFor } = await import('../lib/memory-rule.mjs');
+	const dir = repo();
+	rmSync(join(dir, 'foreman.config.json'));
+	write(dir, { 'packages/app/foreman.config.json': '{}' });
+	const config = loadConfig(join(dir, 'packages/app'));
+	assert.deepEqual(ruleFor(config), { path: 'packages/app/memory', onBase: false, several: [] }, 'no base yet: the config\'s folder');
+	write(dir, { 'packages/app/memory/MEMORY.md': '# Memory\n' });
+	execFileSync('git', ['-C', dir, 'add', '-A']);
+	execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'memory']);
+	assert.deepEqual(ruleFor(config), { path: 'packages/app/memory', onBase: true, several: [] }, 'the base moved: worked out again');
 });
 
 test('config: memory is on by default and validated; its folder is risky once the base has the index; dir "" switches it off', () => {

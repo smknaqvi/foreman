@@ -146,6 +146,11 @@ const blocked = [
 	['gh api repos/o/r/statuses/abc --input status.json'],
 	['gh api repos/o/r/statuses/abc -f state=success -f context=coordinator-review-memory'], // The memory approval.
 	['gh api -X POST repos/{owner}/{repo}/statuses/abc -f context=coordinator-review-memory -f state=success -f description=x'],
+	['gh api repos/o/r/statuses/abc -F context=coordinator-review-memory -F state=success'],
+	['gh api repos/o/r/statuses/abc --field context=coordinator-review-memory --field state=success'],
+	['gh api repos/o/r/statuses/abc --raw-field context=coordinator-review-memory'],
+	['gh api --method POST repos/o/r/statuses/abc --input memory-approval.json'],
+	['echo \'{"context":"coordinator-review-memory","state":"success"}\' | gh api repos/o/r/statuses/abc --input -'],
 	['gh api repos/o/r/statuses/abc -fstate=success -fcontext=coordinator-review'], // Attached short-flag values.
 	['gh api repos/o/r/statuses/abc -f state=success -f context="$(echo coordinator-review)"'],
 	['gh api repos/o/r/statuses/abc -f state=success -f context="$CTX"'],

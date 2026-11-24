@@ -28,9 +28,17 @@ if (a === 'repo' && b === 'view') out(args.includes('owner,name') ? JSON.stringi
 else if ((a === 'run' || a === 'issue') && b === 'list') out('[]');
 else if (a === 'api' && b === 'graphql') { // Approvals from before a force-push: none.
 	const query = args.find((x) => x.startsWith('query=')) ?? '';
-	// forcePushes?: { "<PR number>": [{ oid, contexts: [status contexts that succeeded on it] }] }
-	const node = ({ oid, contexts }) => ({ beforeCommit: { oid, statusCheckRollup: { state: 'SUCCESS' }, status: { contexts: contexts.map((context) => ({ context, state: 'SUCCESS' })) } } });
-	const repository = Object.fromEntries([...query.matchAll(/\bp(\d+):pullRequest/g)].map(([, n]) => [`p${n}`, { timelineItems: { nodes: (s.forcePushes?.[n] ?? []).map(node) } }]));
+	// forcePushes?: { "<PR number>": [{ oid, contexts: [status contexts that succeeded on it], description? }] }.
+	// The head's statuses come from openPrs' statusCheckRollup (a description there, or foreman's wording).
+	const MEMORY = 'Memory approved by foreman approve';
+	const ctx = (context, description) => ({ context, state: 'SUCCESS', description: description ?? (/-memory$/.test(context) ? MEMORY : '') });
+	const node = ({ oid, contexts, description }) => ({ beforeCommit: { oid, statusCheckRollup: { state: 'SUCCESS' }, status: { contexts: contexts.map((c) => ctx(c, description)) } } });
+	const head = (n) => {
+		const pr = (s.openPrs ?? []).find((p) => String(p.number) === n);
+		const contexts = (pr?.statusCheckRollup ?? []).filter((c) => c.__typename === 'StatusContext' && c.state === 'SUCCESS').map((c) => ctx(c.context, c.description));
+		return { nodes: [{ commit: { oid: pr?.headRefOid, status: { contexts } } }] };
+	};
+	const repository = Object.fromEntries([...query.matchAll(/\bp(\d+):pullRequest/g)].map(([, n]) => [`p${n}`, { commits: head(n), timelineItems: { nodes: (s.forcePushes?.[n] ?? []).map(node) } }]));
 	out(JSON.stringify({ data: { repository } }));
 } else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
@@ -39,18 +47,22 @@ else if (a === 'api' && b === 'graphql') { // Approvals from before a force-push
 	const list = (ctx) => (/-memory$/.test(ctx) ? (s.memoryApproved ??= []) : s.approved);
 	const field = (name) => args.flatMap((x, i) => (args[i - 1] === '-f' && x.startsWith(`${name}=`) ? [x.slice(name.length + 1)] : []))[0] ?? '';
 	if ((m = ep.match(/commits\/(\w+)\/statuses$/))) {
-		const ctx = args[args.indexOf('--jq') + 1].match(/\.context=="([^"]+)"/)?.[1] ?? '';
-		out(list(ctx).includes(m[1]) ? 'success' : '');
+		const jq = args[args.indexOf('--jq') + 1];
+		const ctx = jq.match(/\.context=="([^"]+)"/)?.[1] ?? '';
+		const ok = list(ctx).includes(m[1]);
+		// With the description asked for: memoryDesc[sha], or the wording foreman approve --memory writes.
+		out(!ok ? '' : jq.includes('.description') ? `success ${s.memoryDesc?.[m[1]] ?? 'Memory approved by foreman approve'}` : 'success');
 	} else if ((m = ep.match(/\/statuses\/(\w+)$/))) {
 		if (field('context') === s.failStatus) { process.stderr.write('fake gh: HTTP 502\n'); process.exit(1); } // failStatus: that write fails.
 		list(field('context')).push(m[1]);
+		if (/-memory$/.test(field('context'))) (s.memoryDesc ??= {})[m[1]] = field('description');
 		save();
 	}
 	else if ((m = ep.match(/commits\/(\w+)\/check-runs$/)) && args.includes('-f')) {
 		const name = args[args.indexOf('-f') + 1].replace(/^check_name=/, '');
 		out(name === (s.checkName ?? 'verify') ? s.verify[m[1]] ?? '' : '');
 	} else if ((m = ep.match(/commits\/(\w+)\/check-runs$/))) { if (s.failed[m[1]]) out(s.failed[m[1]].split(', ').join('\n')); }
-	else if (/\/pulls\/\d+\/files$/.test(ep)) { s.calls = [...(s.calls ?? []), args.join(' ')]; save(); out((s.prFiles ?? []).join('\n')); } // Every file, past gh pr list's 100.
+	else if (/\/pulls\/\d+\/files$/.test(ep)) { s.calls = [...(s.calls ?? []), args.join(' ')]; save(); if (s.prFilesFail) process.exit(1); out((s.prFiles ?? []).join('\n')); } // Every file, past gh pr list's 100.
 	else { process.stderr.write(`fake gh: unexpected api call ${ep}\n`); process.exit(2); }
 } else if (a === 'pr' && b === 'view') {
 	const json = args[args.indexOf('--json') + 1];

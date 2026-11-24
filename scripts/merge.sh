@@ -35,6 +35,14 @@ has_status() { # Does commit $1 carry a successful status $2 (the newest one wit
 	[ "$(gh api "repos/$repo/commits/$1/statuses" --jq "map(select(.context==\"$2\")) | first | .state // \"\"")" = "success" ]
 }
 approved() { has_status "$1" "$context"; } # The Coordinator's approval.
+# The Coordinator's memory approval on commit $1: written by foreman approve --memory (or carried over by this
+# script), so its description says so. MEMORY_APPROVAL in lib/memory-rule.mjs; foreman status checks the same.
+memory_approved() {
+	case "$(gh api "repos/$repo/commits/$1/statuses" --jq "map(select(.context==\"$memory_context\")) | first | \"\(.state // \"\") \(.description // \"\")\"")" in
+		"success Memory approved by foreman approve"*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
 replayed_tree() { # Tree of "current base + the change approved at commit $1" (3-way merge, no worktree; git 2.38+).
 	local out
 	out=$(git merge-tree --write-tree "origin/$base" "$1" 2>/dev/null) || return 1 # Conflicts: not a clean rebase.
@@ -117,17 +125,11 @@ memory_files=()
 while IFS= read -r -d '' f; do memory_files+=("$f"); done <"$memory_list"
 memory_carry=0
 if [ ${#memory_files[@]} -gt 0 ]; then
-	# The memory approval may be on the head, on the approved commit, or on --rebased-from when the head is
-	# that commit cleanly rebased: a merge interrupted after copying only the main approval to the head left
-	# the memory one behind, and the retry finds the head approved.
+	# On the approved commit, exactly: the head if it's approved itself, else the --rebased-from commit it's a
+	# clean rebase of (the same commit foreman status and tick look at, lib/state.mjs). A merge interrupted
+	# after carrying the memory approval to the head (it goes first) still finds it on --rebased-from.
 	memory_ok=0
-	if has_status "$head" "$memory_context"; then memory_ok=1
-	elif [ "$approved_at" != "$head" ] && has_status "$approved_at" "$memory_context"; then memory_ok=1; memory_carry=1
-	elif [ -n "$rebased_from" ] && [ "$rebased_from" != "$approved_at" ] && has_status "$rebased_from" "$memory_context"; then
-		git fetch -q origin "$rebased_from" 2>/dev/null || true
-		expected=$(replayed_tree "$rebased_from") || expected=""
-		if [ -n "$expected" ] && [ "$expected" = "$(git rev-parse "$head^{tree}")" ]; then memory_ok=1; memory_carry=1; approved_at="$rebased_from"; fi
-	fi
+	if memory_approved "$approved_at"; then memory_ok=1; [ "$approved_at" = "$head" ] || memory_carry=1; fi
 	if [ "$memory_ok" != 1 ]; then
 		memory_dir=$(node "$here/memory-dir.mjs" path "origin/$base" 2>/dev/null) || true
 		echo "PR #$pr changes ${memory_files[0]}$([ ${#memory_files[@]} -gt 1 ] && echo " and $(( ${#memory_files[@]} - 1 )) more")." >&2
@@ -139,7 +141,7 @@ fi
 # between the two never leaves the head with the main approval alone.
 if [ "$memory_carry" = 1 ]; then
 	gh api "repos/$repo/statuses/$head" -f state=success -f context="$memory_context" \
-		-f description="Memory approval carried over: clean rebase of ${approved_at:0:7}" >/dev/null
+		-f description="Memory approved by foreman approve (carried over: clean rebase of ${approved_at:0:7})" >/dev/null
 fi
 if [ "$carry" = 1 ]; then
 	gh api "repos/$repo/statuses/$head" -f state=success -f context="$context" \
