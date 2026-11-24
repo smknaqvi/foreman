@@ -2,7 +2,7 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
-## Unreleased
+## 0.3.0 (2026-11-24)
 - **Any coding agent, not only Claude Code.**
   - **The merge guard works in Codex, Cursor and Gemini CLI too.** `foreman init --agents claude,codex,cursor,gemini` wires it into each tool's project hooks (`.codex/hooks.json`, `.cursor/hooks.json`, `.gemini/settings.json`); without `--agents`, the tools the repo is already set up for (or Claude Code). `.codex/`, `.cursor/` and `.gemini/` are always risky paths. The same shim answers each tool in its own format, and finds its checkout from its own location. `foreman guard --agent <tool>` reads that tool's payload; **`foreman guard --command "<cmd>"`** checks one command for any other tool's hooks (exit 2 when refused). `doctor` lists the wired tools; `guard --self-test` tests each one and fails when a tool the repo is set up for lost its hook. The guard checks the folder the shell tool itself runs in (Gemini CLI's `dir_path`, Codex's `workdir`).
   - **The playbooks are tool-neutral.** Each step says what it needs (a background agent in its own worktree, a message to it, a background `foreman observe`, a review), then how Claude Code does it.
