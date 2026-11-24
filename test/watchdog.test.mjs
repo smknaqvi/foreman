@@ -11,8 +11,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { DEFAULTS, loadConfig } from '../lib/config.mjs';
 import { agentActivity, limitStop, observerRound, projectFolder, resetTime } from '../lib/sessions.mjs';
-import { rebaseAndMerge, tick } from '../lib/tick.mjs';
-import { readCrew } from '../lib/state.mjs';
+import { rebaseAndMerge } from '../lib/tick.mjs';
 import { classify, decide, plist } from '../lib/watchdog.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -242,7 +241,7 @@ function tickRepo(featureFile) {
 	execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
 	execFileSync('git', ['clone', '-q', origin, work], { stdio: 'ignore' });
 	const git = (...a) => execFileSync('git', ['-C', work, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
-	const commit = (file, body) => { mkdirSync(join(work, file, '..'), { recursive: true }); writeFileSync(join(work, file), body); git('add', '-A'); git('commit', '-q', '-m', file); return git('rev-parse', 'HEAD'); };
+	const commit = (file, body) => { writeFileSync(join(work, file), body); git('add', '-A'); git('commit', '-q', '-m', file); return git('rev-parse', 'HEAD'); };
 	git('symbolic-ref', 'HEAD', 'refs/heads/main');
 	commit('README.md', 'hello\n');
 	git('push', '-q', 'origin', 'main');
@@ -263,7 +262,7 @@ function tickRepo(featureFile) {
 	const prObj = { number: 7, headRefName: 'feature', headRefOid: pr, foreman: { approvedSha: pr } };
 	const state = () => JSON.parse(readFileSync(stateFile, 'utf8'));
 	const branch = () => execFileSync('git', ['-C', origin, 'rev-parse', 'refs/heads/feature'], { encoding: 'utf8' }).trim();
-	return { config, prObj, state, branch, pr, git, commit, stateFile };
+	return { config, prObj, state, branch, pr };
 }
 
 test('tick: rebases an approved PR onto the base and merges it through the gate', async () => {
@@ -283,123 +282,6 @@ test('tick: leaves a PR that does not rebase cleanly alone', async () => {
 	assert.match(said.join('\n'), /doesn't rebase cleanly/);
 	assert.equal(t.branch(), t.pr, 'the branch is untouched');
 	assert.equal(t.state().merged, false);
-});
-
-test('tick: leaves a PR that changes the shared memory alone until the Coordinator\'s memory approval is on it', async () => {
-	const t = tickRepo('memory/b.md');
-	t.commit('memory/MEMORY.md', '# Memory\n'); // The memory is set up on main.
-	t.git('push', '-q', 'origin', 'main');
-	const status = (ctx) => ({ __typename: 'StatusContext', context: ctx, state: 'SUCCESS' });
-	const openPr = (rollup) => ({ number: 7, title: 'A note', headRefName: 'feature', headRefOid: t.pr, isCrossRepository: false, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND',
-		statusCheckRollup: [...rollup, { __typename: 'CheckRun', name: 'verify', status: 'COMPLETED', conclusion: 'SUCCESS' }], closingIssuesReferences: [], files: [{ path: 'memory/b.md' }] });
-	const write = (extra) => writeFileSync(t.stateFile, JSON.stringify({ ...t.state(), ...extra }));
-
-	write({ openPrs: [openPr([status('coordinator-review')])] });
-	const said = [];
-	const r = await tick(t.config, { log: (m) => said.push(m) });
-	assert.deepEqual(r.merged, [], said.join('\n'));
-	assert.match(said.join('\n'), /No approved PR is ready to merge/);
-	assert.equal(t.branch(), t.pr, 'not rebased or pushed: merge would refuse it, round after round');
-	assert.equal(t.state().merged, false);
-
-	write({ openPrs: [openPr([status('coordinator-review'), status('coordinator-review-memory')])], memoryApproved: [t.pr] });
-	const again = await tick(t.config, { log: (m) => said.push(m) });
-	assert.deepEqual(again.merged, [7], said.join('\n'));
-	assert.ok(t.state().memoryApproved.includes(t.branch()), 'the memory approval was carried over to the rebased commit');
-});
-
-test('readCrew: the memory rule over every file, risky configs at any depth, and a memory approval from before a rebase', async () => {
-	const t = tickRepo('app.txt');
-	t.commit('memory/MEMORY.md', '# Memory\n');
-	t.git('push', '-q', 'origin', 'main');
-	const status = (ctx) => ({ __typename: 'StatusContext', context: ctx, state: 'SUCCESS' });
-	const check = { __typename: 'CheckRun', name: 'verify', status: 'COMPLETED', conclusion: 'SUCCESS' };
-	const pr = (number, files, rollup) => ({ number, title: `PR ${number}`, headRefName: `b${number}`, headRefOid: `${number}`.repeat(40).slice(0, 40), isCrossRepository: false, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
-		statusCheckRollup: [...rollup, check], closingIssuesReferences: [], files: files.map((path) => ({ path })) });
-	const many = Array.from({ length: 100 }, (_, k) => `src/f${k}.js`);
-	writeFileSync(t.stateFile, JSON.stringify({ ...t.state(),
-		openPrs: [
-			pr(1, many, [status('coordinator-review')]), // 100 listed: the 101st is a memory note.
-			pr(2, ['packages/app/foreman.config.json'], []),
-			pr(3, ['memory/b.md'], [status('coordinator-review')]), // Main approval at the head, memory approval before a rebase.
-			pr(4, ['memory/b.md'], [status('coordinator-review')]),
-			pr(5, ['memory/b.md'], []), // Approved before a rebase, with --memory: the commit merge will use.
-		],
-		prFiles: [...many, 'memory/zz.md'],
-		forcePushes: {
-			3: [{ oid: 'a'.repeat(40), contexts: ['coordinator-review', 'coordinator-review-memory'] }],
-			5: [{ oid: 'b'.repeat(40), contexts: ['coordinator-review', 'coordinator-review-memory'] }],
-		},
-	}));
-	const crew = await readCrew(t.config, { fetchBase: true });
-	const f = Object.fromEntries(crew.prs.map((p) => [p.number, p.foreman]));
-	assert.equal(f[1].needsMemoryApproval, true, 'found past the first 100 files');
-	assert.equal(f[1].ready, false);
-	assert.ok(f[1].risky.includes('memory/zz.md'));
-	assert.deepEqual(f[2].risky, ['packages/app/foreman.config.json'], 'a config at any depth is risky');
-	// Approved again at the head without --memory: merge uses the head, so the earlier memory approval doesn't count.
-	assert.equal(f[3].needsMemoryApproval, true, 'the head is what merge uses');
-	assert.equal(f[3].ready, false);
-	assert.equal(f[4].needsMemoryApproval, true);
-	assert.equal(f[5].needsMemoryApproval, false, 'the approved commit before the rebase has it');
-	assert.equal(f[5].ready, true);
-	assert.equal(f[5].merge, `npx --no-install foreman merge 5 --rebased-from ${'b'.repeat(40)}`);
-	assert.match(t.state().calls.join('\n'), /api --paginate repos\/o\/r\/pulls\/1\/files/);
-});
-
-test('readCrew: a 100+ file PR whose full list can\'t be read counts as changing the memory', async () => {
-	const t = tickRepo('app.txt');
-	t.commit('memory/MEMORY.md', '# Memory\n');
-	t.git('push', '-q', 'origin', 'main');
-	const files = Array.from({ length: 100 }, (_, k) => ({ path: `src/f${k}.js` }));
-	writeFileSync(t.stateFile, JSON.stringify({ ...t.state(), prFilesFail: true, openPrs: [{ number: 8, title: 'Big', headRefName: 'big', headRefOid: '8'.repeat(40), isCrossRepository: false, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
-		statusCheckRollup: [{ __typename: 'StatusContext', context: 'coordinator-review', state: 'SUCCESS' }, { __typename: 'CheckRun', name: 'verify', status: 'COMPLETED', conclusion: 'SUCCESS' }], closingIssuesReferences: [], files }] }));
-	const f = (await readCrew(t.config)).prs[0].foreman;
-	assert.equal(f.needsMemoryApproval, true);
-	assert.equal(f.ready, false);
-	assert.match(f.risky.join(' '), /files GitHub wouldn't list: may include the shared memory/);
-});
-
-test('tick, end to end: approved with --memory, rebased, approved again without it: left alone until --memory', async () => {
-	const t = tickRepo('memory/b.md');
-	t.commit('memory/MEMORY.md', '# Memory\n');
-	t.git('push', '-q', 'origin', 'main');
-	const a = t.pr;
-	// The Builder rebases and pushes B; the Coordinator approves B, forgetting --memory.
-	t.git('checkout', '-q', 'feature');
-	t.git('rebase', '-q', 'origin/main');
-	const b = t.git('rev-parse', 'HEAD');
-	t.git('push', '-q', '-f', 'origin', 'feature', `${b}:refs/pull/7/head`);
-	t.git('checkout', '-q', 'main');
-	const status = (ctx) => ({ __typename: 'StatusContext', context: ctx, state: 'SUCCESS' });
-	const openPr = (rollup) => ({ number: 7, title: 'A note', headRefName: 'feature', headRefOid: b, isCrossRepository: false, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
-		statusCheckRollup: [...rollup, { __typename: 'CheckRun', name: 'verify', status: 'COMPLETED', conclusion: 'SUCCESS' }], closingIssuesReferences: [], files: [{ path: 'memory/b.md' }] });
-	const state = t.state();
-	writeFileSync(t.stateFile, JSON.stringify({ ...state, approved: [a, b], memoryApproved: [a], verify: { [a]: 'success', [b]: 'success' },
-		openPrs: [openPr([status('coordinator-review')])], forcePushes: { 7: [{ oid: a, contexts: ['coordinator-review', 'coordinator-review-memory'] }] } }));
-	const said = [];
-	const first = await tick(t.config, { log: (m) => said.push(m) });
-	assert.deepEqual(first.merged, [], said.join('\n'));
-	assert.equal(t.branch(), b, 'not touched');
-	assert.equal(t.state().merged, false);
-	const crew = await readCrew(t.config);
-	assert.equal(crew.prs[0].foreman.needsMemoryApproval, true, 'status says it needs the memory approval');
-
-	// The Coordinator approves B with --memory: tick merges it.
-	writeFileSync(t.stateFile, JSON.stringify({ ...t.state(), memoryApproved: [a, b], openPrs: [openPr([status('coordinator-review'), status('coordinator-review-memory')])] }));
-	const second = await tick(t.config, { log: (m) => said.push(m) });
-	assert.deepEqual(second.merged, [7], said.join('\n'));
-});
-
-test('readCrew: a PR that adds the memory\'s index is risky before the base has one', async () => {
-	const t = tickRepo('app.txt');
-	const pr = { number: 5, title: 'Set up memory', headRefName: 'm', headRefOid: '5'.repeat(40), isCrossRepository: false, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', statusCheckRollup: [], closingIssuesReferences: [], files: [{ path: 'memory/MEMORY.md' }, { path: 'memory/a.md' }] };
-	const other = { ...pr, number: 6, files: [{ path: 'memory/a.md' }] };
-	writeFileSync(t.stateFile, JSON.stringify({ ...t.state(), openPrs: [pr, other] }));
-	const crew = await readCrew(t.config);
-	assert.deepEqual(crew.prs[0].foreman.risky, ['memory/MEMORY.md', 'memory/a.md']);
-	assert.equal(crew.prs[0].foreman.needsMemoryApproval, true);
-	assert.deepEqual(crew.prs[1].foreman.risky, [], 'no index on the base or in the PR: memory/ is just a folder');
 });
 
 test('watchdog session: runs the command and records how it ended', () => {

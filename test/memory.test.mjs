@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from '../lib/config.mjs';
+import { loadConfig, memoryFolder } from '../lib/config.mjs';
 import { appliedIn, checkMemory, formatNote, memorySection, parseIndex, parseNote } from '../lib/memory.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -253,14 +253,15 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	write(dir, { 'memory/b.md': note('b', 'B', 'project', 'source: "PR #7"\n') });
 
 	const stateFile = join(dir, '.git/gh-state.json');
-	const pr = (number, mergedAt, body) => ({ number, title: `PR ${number}`, body, mergedAt });
+	const pr = (number, mergedAt, body, files = ['app.txt']) => ({ number, title: `PR ${number}`, body, mergedAt, files: files.map((path) => ({ path })) });
 	writeFileSync(stateFile, JSON.stringify({ repo: 'o/r', pr: {}, mergedPrs: [
 		pr(5, '2026-03-05T00:00:00Z', '- **Memory updates**: correct `a`: it is B now\n- **Plan updates**: z'),
 		pr(1, '2026-03-01T11:00:00Z', '## Memory updates\n- new: before the memory existed'),
 		pr(2, '2026-03-02T00:00:00Z', '## Memory updates\n- new: the cache must be warm'),
 		pr(3, '2026-03-03T00:00:00Z', '- **Memory updates**: none'),
 		pr(4, '2026-03-04T00:00:00Z', '## Memory updates\n- new: applied already'),
-		pr(9, '2026-03-04T06:00:00Z', 'Memory PR.\n\nApplies memory updates from #4\n\n## Memory updates\n- not a proposal'),
+		pr(9, '2026-03-04T06:00:00Z', 'Memory PR.\n\nApplies memory updates from #4\n\n## Memory updates\n- not a proposal', ['memory/a.md']),
+		pr(10, '2026-03-04T07:00:00Z', 'Not a memory PR: it changes no note.\n\nApplies memory updates from #2'), // Claims #2, proves nothing.
 		pr(6, '2026-03-12T00:00:00Z', '## Memory updates\n- new: B, applied on the branch'),
 		pr(7, '2026-03-09T00:00:00Z', '## Memory updates\n- new: merged while the last memory PR was open'),
 	] }));
@@ -272,10 +273,10 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	assert.match(r.out, /PR #2 PR 2 \(merged 2026-03-02 00:00 UTC\)\n {2}- new: the cache must be warm/);
 	assert.match(r.out, /PR #5 PR 5 .*\n {2}correct `a`: it is B now\n/);
 	assert.match(r.out, /PR #7 .*\n {2}- new: merged while the last memory PR was open/, 'merged before the latest memory change, but nothing applied it');
-	assert.doesNotMatch(r.out, /PR #[13469] |before the memory existed|applied already|not a proposal|applied on the branch/);
+	assert.doesNotMatch(r.out, /PR #(?:[13469]|10) |before the memory existed|applied already|not a proposal|applied on the branch/);
 	assert.match(r.out, /3 PRs to apply\. On a memory branch \(e\.g\. foreman\/memory-\d{4}-\d{2}-\d{2}\)/);
 	assert.match(r.out, /Applies memory updates from #2, #5, #7/);
-	assert.match(r.out, /foreman approve <PR> <sha> --memory/);
+	assert.match(r.out, /Review, approve and merge it like any other/);
 	assert.doesNotMatch(r.out, /warn/);
 	assert.match(JSON.parse(readFileSync(stateFile, 'utf8')).calls.at(-1), /--state merged --base main --limit 200 .*--search merged:>=2026-02-28/);
 
@@ -316,39 +317,25 @@ test('memory updates: the window is decided by ancestry, not by clocks', () => {
 	assert.doesNotMatch(out, /PR #20 /);
 });
 
-test('ruleFor: falls back to the config\'s own folder, and refreshes when the base moves', async () => {
-	const { ruleFor } = await import('../lib/memory-rule.mjs');
-	const dir = repo();
-	rmSync(join(dir, 'foreman.config.json'));
-	write(dir, { 'packages/app/foreman.config.json': '{}' });
-	const config = loadConfig(join(dir, 'packages/app'));
-	assert.deepEqual(ruleFor(config), { path: 'packages/app/memory', onBase: false, several: [] }, 'no base yet: the config\'s folder');
-	write(dir, { 'packages/app/memory/MEMORY.md': '# Memory\n' });
-	execFileSync('git', ['-C', dir, 'add', '-A']);
-	execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'memory']);
-	assert.deepEqual(ruleFor(config), { path: 'packages/app/memory', onBase: true, several: [] }, 'the base moved: worked out again');
-});
-
-test('config: memory is on by default and validated; its folder is risky once the base has the index; dir "" switches it off', () => {
+test('config: memory is on by default and validated; its folder is always risky while on; dir "" switches it off', () => {
 	const dir = repo();
 	const c = loadConfig(dir);
 	assert.deepEqual(c.memory, { dir: 'memory' });
-	assert.ok(!c.riskyPaths.includes('memory/'), 'no index on the base: a folder of that name may be anything');
-	write(dir, { 'memory/MEMORY.md': '# Memory\n' });
-	assert.ok(!loadConfig(dir).riskyPaths.includes('memory/'), 'an uncommitted index doesn\'t count');
-	execFileSync('git', ['-C', dir, 'add', '-A']);
-	execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'memory']);
-	assert.ok(loadConfig(dir).riskyPaths.includes('memory/'), 'committed on the base: risky');
-	rmSync(join(dir, 'memory'), { recursive: true });
+	assert.ok(c.riskyPaths.includes('memory/'), 'any PR touching it gets the stricter review');
 	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ memory: { dir: './docs/memory/' } }));
 	assert.equal(loadConfig(dir).memory.dir, 'docs/memory');
-	assert.ok(!loadConfig(dir).riskyPaths.includes('docs/memory/'));
+	assert.ok(loadConfig(dir).riskyPaths.includes('docs/memory/'));
+	// A config in a subfolder: the memory is that folder's, and its path from the repo's top is what's risky.
+	write(dir, { 'packages/app/foreman.config.json': '{}' });
+	const sub = loadConfig(join(dir, 'packages/app'));
+	assert.equal(memoryFolder(sub), join(dir, 'packages/app/memory'));
+	assert.ok(sub.riskyPaths.includes('packages/app/memory/'));
 	for (const bad of [{ dir: '../elsewhere' }, { dir: '/abs' }, { dir: 'a b' }, { dir: 3 }]) {
 		writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ memory: bad }));
 		assert.throws(() => loadConfig(dir), /memory\.dir/, JSON.stringify(bad));
 	}
 	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ memory: { dir: '' } }));
-	assert.ok(!loadConfig(dir).riskyPaths.includes('memory/'));
+	assert.ok(!loadConfig(dir).riskyPaths.includes('memory/'), 'off: nothing to protect');
 	const off = cli(dir, ['memory', 'check']);
 	assert.equal(off.code, 0);
 	assert.match(off.out, /Shared memory is off/);
@@ -363,7 +350,7 @@ test('init creates the memory index once, never replaces it, and leaves a folder
 	assert.match(r.out, /Read memory\/MEMORY\.md before starting/);
 	const idx = readFileSync(join(dir, 'memory/MEMORY.md'), 'utf8');
 	assert.match(idx, /One fact per note/);
-	assert.match(idx, /Only the Coordinator edits this folder,\*\* in its own memory PRs, which it approves with `foreman approve --memory`/);
+	assert.match(idx, /Only the Coordinator edits this folder,\*\* in its own memory PRs\. Any PR that touches it gets the stricter review/);
 	assert.match(idx, /"Memory updates" section/);
 	assert.deepEqual(checkMemory(loadConfig(dir)), { notes: [], errors: [], warnings: [] });
 	writeFileSync(join(dir, 'memory/MEMORY.md'), `${idx}- [Kept](kept.md) — ours\n`);
@@ -378,6 +365,16 @@ test('init creates the memory index once, never replaces it, and leaves a folder
 		assert.match(out, /memory\/ already holds files that aren't memory notes .* so it was left alone/);
 		assert.doesNotMatch(out, /Read memory\/MEMORY\.md before starting/);
 	}
+
+	// The CI check runs memory check once there's a memory; not without one.
+	const ci = repo();
+	cli(ci, ['init', '--ci']);
+	assert.match(readFileSync(join(ci, '.github/workflows/verify.yml'), 'utf8'), /- run: npm test\n {6}- run: npx --no-install foreman memory check\n/);
+	const noMemory = repo();
+	writeFileSync(join(noMemory, 'foreman.config.json'), JSON.stringify({ memory: { dir: '' } }));
+	cli(noMemory, ['init', '--ci', '--self-hosted', 'mac']);
+	const hosted = readFileSync(join(noMemory, '.github/workflows/verify.yml'), 'utf8');
+	assert.doesNotMatch(hosted, /memory check|__MEMORY_CHECK__/);
 
 	// A file called memory, or a folder called x.md inside it: not a memory folder, and no crash.
 	const file = repo();

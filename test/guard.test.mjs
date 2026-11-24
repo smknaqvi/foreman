@@ -144,13 +144,6 @@ const blocked = [
 	['gh api repos/o/r/statuses/abc123 -f state=success -f context=coordinator-review'],
 	['gh api repos/{owner}/{repo}/statuses/abc -f state=success -f context=coordinator-review'],
 	['gh api repos/o/r/statuses/abc --input status.json'],
-	['gh api repos/o/r/statuses/abc -f state=success -f context=coordinator-review-memory'], // The memory approval.
-	['gh api -X POST repos/{owner}/{repo}/statuses/abc -f context=coordinator-review-memory -f state=success -f description=x'],
-	['gh api repos/o/r/statuses/abc -F context=coordinator-review-memory -F state=success'],
-	['gh api repos/o/r/statuses/abc --field context=coordinator-review-memory --field state=success'],
-	['gh api repos/o/r/statuses/abc --raw-field context=coordinator-review-memory'],
-	['gh api --method POST repos/o/r/statuses/abc --input memory-approval.json'],
-	['echo \'{"context":"coordinator-review-memory","state":"success"}\' | gh api repos/o/r/statuses/abc --input -'],
 	['gh api repos/o/r/statuses/abc -fstate=success -fcontext=coordinator-review'], // Attached short-flag values.
 	['gh api repos/o/r/statuses/abc -f state=success -f context="$(echo coordinator-review)"'],
 	['gh api repos/o/r/statuses/abc -f state=success -f context="$CTX"'],
@@ -223,7 +216,7 @@ test('lets ordinary work through', () => {
 test('follows the configured base branch and approval context', () => {
 	const trunk = repoOn('trunk');
 	const opts = { baseBranch: 'trunk', approvalContext: 'lead-review' };
-	for (const c of ['git push origin trunk', 'git push origin HEAD:refs/heads/trunk', 'gh api -X PATCH repos/o/r/git/refs/heads/trunk -f sha=abc', 'gh api repos/o/r/statuses/abc -f state=success -f context=lead-review', 'gh api repos/o/r/statuses/abc -f state=success -f context=lead-review-memory'])
+	for (const c of ['git push origin trunk', 'git push origin HEAD:refs/heads/trunk', 'gh api -X PATCH repos/o/r/git/refs/heads/trunk -f sha=abc', 'gh api repos/o/r/statuses/abc -f state=success -f context=lead-review'])
 		assert.ok(blockedReason(c, feature, opts), c);
 	assert.ok(blockedReason('git push', trunk, opts));
 	for (const c of ['git push origin main', 'git push origin trunk-fix', 'gh api repos/o/r/statuses/abc -f state=success -f context=ci/other'])

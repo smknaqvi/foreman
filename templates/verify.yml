@@ -1,5 +1,6 @@
 # The check `foreman merge` waits for (requiredCheck in foreman.config.json: the job's name, "verify").
-# Put the same command here that Builders run before opening a PR (verifyCommand).
+# Put the same command here that Builders run before opening a PR (verifyCommand). With shared memory on,
+# `foreman memory check` checks its notes too: memory PRs only change Markdown, so they'd skip the rest.
 name: Verify
 
 on:
@@ -23,3 +24,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: __VERIFY__
+      __MEMORY_CHECK__

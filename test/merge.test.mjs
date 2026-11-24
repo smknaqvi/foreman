@@ -21,11 +21,8 @@ temps.push(bin);
 copyFileSync(join(ROOT, 'test/fake-gh.mjs'), join(bin, 'gh'));
 chmodSync(join(bin, 'gh'), 0o755);
 
-/**
- * An origin with main at one commit (plus `base` files), a clone to work in, and a PR (#7) whose branch
- * (`branch`, "feature" by default) adds `files`.
- */
-function setup(files = { 'app.txt': 'feature\n' }, { base = {} } = {}) {
+/** An origin with main at one commit, a clone to work in, and a PR (#7) whose branch adds `files`. */
+function setup(files = { 'app.txt': 'feature\n' }) {
 	const dir = mkdtempSync(join(tmpdir(), 'foreman-merge-'));
 	temps.push(dir);
 	const origin = join(dir, 'origin.git'), work = join(dir, 'work');
@@ -33,17 +30,13 @@ function setup(files = { 'app.txt': 'feature\n' }, { base = {} } = {}) {
 	execFileSync('git', ['clone', '-q', origin, work], { stdio: 'ignore' });
 	const git = (...a) => execFileSync('git', ['-C', work, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
 	const commit = (changes, msg) => {
-		for (const [f, body] of Object.entries(changes)) {
-			if (body === null) { rmSync(join(work, f)); continue; } // null: delete the file.
-			mkdirSync(join(work, f, '..'), { recursive: true });
-			writeFileSync(join(work, f), body);
-		}
+		for (const [f, body] of Object.entries(changes)) { mkdirSync(join(work, f, '..'), { recursive: true }); writeFileSync(join(work, f), body); }
 		git('add', '-A');
 		git('commit', '-q', '-m', msg);
 		return git('rev-parse', 'HEAD');
 	};
 	git('symbolic-ref', 'HEAD', 'refs/heads/main');
-	commit({ 'README.md': 'hello\n', 'baselines/a.txt': '1\n', ...base }, 'base');
+	commit({ 'README.md': 'hello\n', 'baselines/a.txt': '1\n' }, 'base');
 	git('push', '-q', 'origin', 'main');
 	git('checkout', '-q', '-b', 'feature');
 	const pr = commit(files, 'the change');
@@ -67,9 +60,9 @@ function setup(files = { 'app.txt': 'feature\n' }, { base = {} } = {}) {
 		publish(sha);
 		return sha;
 	};
-	const run = (script, args, config, sub = '') => {
-		const r = spawnSync('bash', [join(ROOT, `scripts/${script}.sh`), ...args], {
-			cwd: join(work, sub), // sub: run from a subfolder holding the config.
+	const merge = (args, config = {}) => {
+		const r = spawnSync('bash', [join(ROOT, 'scripts/merge.sh'), '7', ...args], {
+			cwd: work,
 			encoding: 'utf8',
 			env: { ...process.env, ...scriptEnv({ ...DEFAULTS, ...config }), PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: stateFile, FOREMAN_LOCK_WAIT: '1' },
 		});
@@ -77,9 +70,7 @@ function setup(files = { 'app.txt': 'feature\n' }, { base = {} } = {}) {
 		Object.assign(state, now);
 		return { code: r.status, out: r.stdout + r.stderr, merged: now.merged };
 	};
-	const merge = (args, config = {}, sub = '') => run('merge', ['7', ...args], config, sub);
-	const approve = (args, config = {}, sub = '') => run('approve', ['7', ...args], config, sub);
-	return { state, save, pr, advanceMain, rebase, merge, approve };
+	return { state, save, pr, advanceMain, rebase, merge };
 }
 
 test('refuses a PR that was never approved', () => {
@@ -187,204 +178,4 @@ test('a required check whose name has spaces and & is looked up by its exact nam
 	const t = setup();
 	t.state.approved.push(t.pr); t.state.verify[t.pr] = 'success'; t.state.checkName = 'Build & Test (ubuntu, 20)'; t.save();
 	assert.equal(t.merge([], { requiredCheck: 'Build & Test (ubuntu, 20)' }).merged, true);
-});
-
-// The shared memory: a PR that changes it merges only with the Coordinator's memory approval
-// (foreman approve --memory), once the base has its index (or for the PR that adds the index).
-const withMemory = { base: { 'memory/MEMORY.md': '# Memory\n\n## Notes\n\n- [A](a.md) — a\n', 'memory/a.md': '---\nname: a\ndescription: a\ntype: project\n---\n' } };
-const REFUSED = /This PR changes memory\/: only the Coordinator's memory PRs merge it \(approved with foreman approve --memory\)\. Put it in the PR's 'Memory updates' section instead\./;
-
-test('refuses a PR that changes the memory without the memory approval, docs-only (no checks to wait for) or not', () => {
-	for (const files of [{ 'memory/b.md': 'new fact\n' }, { 'memory/a.md': 'edited\n', 'app.txt': 'code\n' }, { 'memory/a.md': null }]) {
-		const t = setup(files, withMemory);
-		t.state.approved.push(t.pr); t.state.verify[t.pr] = 'success'; t.save();
-		const r = t.merge([]);
-		assert.equal(r.merged, false, r.out);
-		assert.match(r.out, REFUSED);
-		assert.match(r.out, /PR #7 changes memory\/(a|b)\.md/);
-	}
-});
-
-test('matches memory files whatever their names: non-ASCII ones too', () => {
-	const t = setup({ 'memory/café.md': 'x\n', 'docs/naïve.md': 'y\n' }, withMemory);
-	t.state.approved.push(t.pr); t.save();
-	const r = t.merge([]);
-	assert.equal(r.merged, false, r.out);
-	assert.match(r.out, /PR #7 changes memory\/café\.md/);
-});
-
-test('merges a memory change the Coordinator approved with --memory, and carries that over a clean rebase', () => {
-	const t = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
-	t.state.approved.push(t.pr); t.state.memoryApproved = [t.pr]; t.state.checksPass = false; t.save();
-	t.advanceMain({ 'other.txt': 'x\n' });
-	const head = t.rebase();
-	const r = t.merge(['--rebased-from', t.pr]);
-	assert.equal(r.merged, true, r.out);
-	assert.match(r.out, /only changes documentation/);
-	assert.ok(t.state.memoryApproved.includes(head), 'the memory approval is recorded on the rebased commit');
-
-	// The memory approval alone merges nothing: the PR still needs its ordinary approval.
-	const u = setup({ 'memory/b.md': 'x\n' }, withMemory);
-	u.state.memoryApproved = [u.pr]; u.save();
-	assert.match(u.merge([]).out, /isn't approved/);
-});
-
-test('foreman approve --memory: both approvals on a memory PR; refused for a PR that leaves the memory alone', () => {
-	const t = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
-	const r = t.approve([t.pr, '--memory']);
-	assert.equal(r.code, 0, r.out);
-	assert.match(r.out, /memory change included/);
-	assert.ok(t.state.approved.includes(t.pr) && t.state.memoryApproved.includes(t.pr));
-	assert.equal(t.merge([]).merged, true);
-
-	const code = setup({ 'app.txt': 'code\n' }, withMemory);
-	const no = code.approve([code.pr, '--memory']);
-	assert.equal(no.code, 1);
-	assert.match(no.out, /doesn't change the shared memory \(or it isn't set up on main\): approve it without --memory/);
-	assert.deepEqual(code.state.approved, [], 'nothing approved');
-	assert.equal(code.approve([code.pr]).code, 0, 'a plain approval still works');
-	assert.deepEqual(code.state.memoryApproved ?? [], []);
-});
-
-test('the memory rule holds once the base has the index, or for the PR adding it; a folder without one is left alone', () => {
-	const first = setup({ 'memory/MEMORY.md': '# Memory\n' }); // The PR that sets the memory up (foreman init in an upgrade).
-	first.state.approved.push(first.pr); first.save();
-	assert.match(first.merge([]).out, REFUSED);
-	first.state.memoryApproved = [first.pr]; first.save();
-	assert.equal(first.merge([]).merged, true);
-
-	const other = setup({ 'memory/allocator.c': 'int x;\n' }); // memory/ is the repo's own code here.
-	other.state.approved.push(other.pr); other.state.verify[other.pr] = 'success'; other.save();
-	assert.equal(other.merge([]).merged, true, 'no index on the base: not a foreman memory');
-});
-
-test('reads the memory setting from the base branch, so a PR can\'t switch the rule off for itself', () => {
-	const sneaky = setup({ 'memory/b.md': 'x\n', 'foreman.config.json': '{"memory":{"dir":""}}\n' }, withMemory);
-	sneaky.state.approved.push(sneaky.pr); sneaky.state.verify[sneaky.pr] = 'success'; sneaky.save();
-	const r = sneaky.merge([], { memory: { dir: '' } }); // Even with the PR's config in the environment.
-	assert.equal(r.merged, false, r.out);
-	assert.match(r.out, REFUSED);
-
-	const off = setup({ 'memory/b.md': 'x\n' }, { base: { ...withMemory.base, 'foreman.config.json': '{"memory":{"dir":""}}\n' } });
-	off.state.approved.push(off.pr); off.save();
-	assert.equal(off.merge([]).merged, true, 'switched off on the base: no rule');
-
-	const moved = setup({ 'notes/b.md': 'x\n' }, { base: { 'foreman.config.json': '{"memory":{"dir":"notes"}}\n', 'notes/MEMORY.md': '# Memory\n' } });
-	moved.state.approved.push(moved.pr); moved.save();
-	assert.match(moved.merge([]).out, /This PR changes notes\//);
-
-	const broken = setup({ 'memory/b.md': 'x\n' }, { base: { ...withMemory.base, 'foreman.config.json': '{ not json' } });
-	broken.state.approved.push(broken.pr); broken.save();
-	assert.match(broken.merge([]).out, REFUSED, 'a base config that doesn\'t parse keeps the rule on');
-});
-
-test('a config in a subfolder: the memory is that folder\'s, read from the same place on the base', () => {
-	const base = { 'packages/app/foreman.config.json': '{}\n', 'packages/app/memory/MEMORY.md': '# Memory\n' };
-	const t = setup({ 'packages/app/memory/b.md': 'x\n' }, { base });
-	t.state.approved.push(t.pr); t.save();
-	const r = t.merge([], {}, 'packages/app');
-	assert.equal(r.merged, false, r.out);
-	assert.match(r.out, /This PR changes packages\/app\/memory\/: only the Coordinator's memory PRs merge it/);
-	assert.equal(t.approve([t.pr, '--memory'], {}, 'packages/app').code, 0);
-	assert.equal(t.merge([], {}, 'packages/app').merged, true);
-
-	const top = setup({ 'memory/x.md': 'not the app\'s memory\n' }, { base });
-	top.state.approved.push(top.pr); top.save();
-	assert.equal(top.merge([], {}, 'packages/app').merged, true, 'memory/ at the top isn\'t this config\'s memory');
-
-	const off = setup({ 'packages/app/memory/b.md': 'x\n' }, { base: { ...base, 'packages/app/foreman.config.json': '{"memory":{"dir":""}}\n' } });
-	off.state.approved.push(off.pr); off.save();
-	assert.equal(off.merge([], {}, 'packages/app').merged, true, 'switched off in that config on the base');
-});
-
-test('approve --memory writes the memory approval first: if the main one then fails, nothing counts as approved', () => {
-	const t = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
-	t.state.failStatus = 'coordinator-review'; t.save();
-	const r = t.approve([t.pr, '--memory']);
-	assert.notEqual(r.code, 0);
-	assert.deepEqual(t.state.approved, [], 'no main approval');
-	delete t.state.failStatus; t.save();
-	assert.match(t.merge([]).out, /isn't approved/, 'and merge refuses it');
-});
-
-test('a PR can\'t move the memory out of its way with a config of its own in a subfolder (cd sub && foreman merge)', () => {
-	const t = setup({ 'memory/b.md': 'x\n', 'sub/foreman.config.json': '{}\n' }, withMemory);
-	t.state.approved.push(t.pr); t.state.verify[t.pr] = 'success'; t.save();
-	const r = t.merge([], {}, 'sub');
-	assert.equal(r.merged, false, r.out);
-	assert.match(r.out, REFUSED);
-
-	// Several configs on the base: the top-most one says where the memory is, and merge says so.
-	const several = setup({ 'memory/b.md': 'x\n' }, { base: { ...withMemory.base, 'foreman.config.json': '{}\n', 'packages/app/foreman.config.json': '{"memory":{"dir":""}}\n' } });
-	several.state.approved.push(several.pr); several.save();
-	const out = several.merge([], {}, 'packages/app').out;
-	assert.match(out, REFUSED);
-	assert.match(out, /Several foreman\.config\.json files on origin\/main \(foreman\.config\.json, packages\/app\/foreman\.config\.json\): the shared memory follows the top-most, foreman\.config\.json/);
-});
-
-test('matches the memory folder whatever its case (Memory/x.md is memory/x.md on macOS and Windows)', () => {
-	const t = setup({ 'Memory/x.md': 'x\n' }, withMemory);
-	t.state.approved.push(t.pr); t.save();
-	assert.match(t.merge([]).out, REFUSED);
-});
-
-test('the memory approval counts on the approved commit only; a merge interrupted after carrying it over finishes on retry', () => {
-	// Interrupted after carrying the memory approval to the rebased head (it goes first), before the main one.
-	const t = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
-	t.state.approved.push(t.pr); t.state.memoryApproved = [t.pr]; t.save();
-	t.advanceMain({ 'other.txt': 'x\n' });
-	const head = t.rebase();
-	t.state.memoryApproved.push(head); t.save();
-	const r = t.merge(['--rebased-from', t.pr]);
-	assert.equal(r.merged, true, r.out);
-	assert.ok(t.state.approved.includes(head));
-
-	// A approved with --memory, then rebased, then B approved without it: B is what merge uses, and has none.
-	const u = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
-	u.state.approved.push(u.pr); u.state.memoryApproved = [u.pr]; u.save();
-	u.advanceMain({ 'other.txt': 'x\n' });
-	const b = u.rebase();
-	u.state.approved.push(b); u.save();
-	assert.match(u.merge(['--rebased-from', u.pr]).out, REFUSED);
-	assert.match(u.merge(['--rebased-from', b]).out, REFUSED);
-
-	// A changed PR can't borrow an earlier commit's memory approval.
-	const v = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
-	v.state.approved.push(v.pr); v.state.memoryApproved = [v.pr]; v.save();
-	v.advanceMain({ 'other.txt': 'x\n' });
-	v.rebase({ 'memory/c.md': 'unreviewed\n' });
-	assert.match(v.merge(['--rebased-from', v.pr]).out, /changed since approval/);
-});
-
-test('a memory status merge didn\'t write the way foreman approve does isn\'t a memory approval', () => {
-	const t = setup({ 'memory/b.md': 'x\n' }, withMemory);
-	t.state.approved.push(t.pr); t.state.memoryApproved = [t.pr]; t.state.memoryDesc = { [t.pr]: 'LGTM' }; t.save();
-	assert.match(t.merge([]).out, REFUSED);
-	t.state.memoryDesc = { [t.pr]: 'Memory approved by foreman approve' }; t.save();
-	assert.equal(t.merge([]).merged, true);
-});
-
-test('a PR that moves or switches off the memory in the base\'s config needs the memory approval too', () => {
-	const base = { ...withMemory.base, 'foreman.config.json': '{}\n' };
-	for (const config of ['{"memory":{"dir":""}}\n', '{"memory":{"dir":"elsewhere"}}\n']) {
-		const t = setup({ 'foreman.config.json': config }, { base });
-		t.state.approved.push(t.pr); t.state.verify[t.pr] = 'success'; t.save();
-		const r = t.merge([]);
-		assert.equal(r.merged, false, r.out);
-		assert.match(r.out, /PR #7 changes foreman\.config\.json\./);
-		t.state.memoryApproved = [t.pr]; t.save();
-		assert.equal(t.merge([]).merged, true);
-	}
-	const other = setup({ 'foreman.config.json': '{"maxBuilders":2}\n' }, { base });
-	other.state.approved.push(other.pr); other.state.verify[other.pr] = 'success'; other.save();
-	assert.equal(other.merge([]).merged, true, 'another setting: an ordinary (risky) change');
-});
-
-test('the memory check comes before the approval is copied to a rebased head', () => {
-	const t = setup({ 'memory/b.md': 'x\n' }, withMemory);
-	t.state.approved.push(t.pr); t.save(); // Main approval only.
-	t.advanceMain({ 'other.txt': 'x\n' });
-	const head = t.rebase();
-	assert.match(t.merge(['--rebased-from', t.pr]).out, REFUSED);
-	assert.ok(!t.state.approved.includes(head), 'the head isn\'t left looking approved');
 });

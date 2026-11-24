@@ -14,8 +14,7 @@ Coordinator
   status                                  where everything stands (CI, Builders, PRs, approvals, environments)
   claim <issue> --branch <b> [--port <p>] record that a Builder is on an issue
   release <issue>                         un-mark an abandoned issue
-  approve <PR> <reviewed sha> [--memory]  approve exactly the commit you reviewed (--memory: your own memory
-                                          PR, the only kind foreman merge lets change memory/)
+  approve <PR> <reviewed sha>             approve exactly the commit you reviewed
   observe [--once]                        print a line whenever something needs attention (run under Monitor)
   dashboard [--port <p>] [--open]         the crew in a browser, live (read-only; 127.0.0.1:4477)
   tick [--dry-run]                        what needs no judgement: merge approved, green PRs (clean rebases
