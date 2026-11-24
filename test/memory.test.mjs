@@ -144,6 +144,7 @@ test('memory check: warnings for what may be stale, exit 0', () => {
 	const paths = r.out.split('\n').filter((l) => l.includes('paths.md mentions'));
 	assert.equal(paths.length, 1, `only lib/gone.mjs is a missing repo path:\n${paths.join('\n')}`);
 	assert.match(r.out, /memory check: 7 notes in memory\/, no problems, 5 warnings\./);
+	assert.deepEqual(checkMemory(loadConfig(dir), { warnings: false }).warnings, [], 'errors only, for foreman status');
 });
 
 test('memory add writes a note and its index line, refuses an existing slug, and passes the check', () => {
@@ -235,7 +236,8 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	commit({ 'README.md': 'x\n' }, '2026-01-01T00:00:00Z');
 	commit({ 'memory/MEMORY.md': index('a'), 'memory/a.md': note('a', 'A') }, '2026-03-01T12:00:00Z'); // The index is added.
 	// A later memory PR (not where counting starts), with a note whose source is PR #6: applied.
-	commit({ 'memory/a.md': note('a', 'A, again'), 'memory/c.md': note('c', 'C', 'project', 'source: "PR #6"\n') }, '2026-03-10T00:00:00Z');
+	// (A source naming an issue, "issue #2", isn't a PR: PR #2 still shows.)
+	commit({ 'memory/a.md': note('a', 'A, again'), 'memory/c.md': note('c', 'C', 'project', 'source: "PR #6"\n'), 'memory/d.md': note('d', 'D', 'project', 'source: "issue #2"\n') }, '2026-03-10T00:00:00Z');
 	// A note naming PR #7 on the Coordinator's branch, not merged yet: doesn't count until it's on the base.
 	write(dir, { 'memory/b.md': note('b', 'B', 'project', 'source: "PR #7"\n') });
 

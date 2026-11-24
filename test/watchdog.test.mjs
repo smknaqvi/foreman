@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULTS, loadConfig } from '../lib/config.mjs';
 import { agentActivity, limitStop, observerRound, projectFolder, resetTime } from '../lib/sessions.mjs';
 import { rebaseAndMerge, tick } from '../lib/tick.mjs';
+import { readCrew } from '../lib/state.mjs';
 import { classify, decide, plist } from '../lib/watchdog.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -305,6 +306,48 @@ test('tick: leaves a PR that changes the shared memory alone until the Coordinat
 	const again = await tick(t.config, { log: (m) => said.push(m) });
 	assert.deepEqual(again.merged, [7], said.join('\n'));
 	assert.ok(t.state().memoryApproved.includes(t.branch()), 'the memory approval was carried over to the rebased commit');
+});
+
+test('readCrew: the memory rule over every file, risky configs at any depth, and a memory approval from before a rebase', async () => {
+	const t = tickRepo('app.txt');
+	t.commit('memory/MEMORY.md', '# Memory\n');
+	t.git('push', '-q', 'origin', 'main');
+	const status = (ctx) => ({ __typename: 'StatusContext', context: ctx, state: 'SUCCESS' });
+	const check = { __typename: 'CheckRun', name: 'verify', status: 'COMPLETED', conclusion: 'SUCCESS' };
+	const pr = (number, files, rollup) => ({ number, title: `PR ${number}`, headRefName: `b${number}`, headRefOid: `${number}`.repeat(40).slice(0, 40), isCrossRepository: false, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
+		statusCheckRollup: [...rollup, check], closingIssuesReferences: [], files: files.map((path) => ({ path })) });
+	const many = Array.from({ length: 100 }, (_, k) => `src/f${k}.js`);
+	writeFileSync(t.stateFile, JSON.stringify({ ...t.state(),
+		openPrs: [
+			pr(1, many, [status('coordinator-review')]), // 100 listed: the 101st is a memory note.
+			pr(2, ['packages/app/foreman.config.json'], []),
+			pr(3, ['memory/b.md'], [status('coordinator-review')]), // Main approval at the head, memory approval before a rebase.
+			pr(4, ['memory/b.md'], [status('coordinator-review')]),
+		],
+		prFiles: [...many, 'memory/zz.md'],
+		forcePushes: { 3: [{ oid: 'a'.repeat(40), contexts: ['coordinator-review', 'coordinator-review-memory'] }] },
+	}));
+	const crew = await readCrew(t.config, { fetchBase: true });
+	const f = Object.fromEntries(crew.prs.map((p) => [p.number, p.foreman]));
+	assert.equal(f[1].needsMemoryApproval, true, 'found past the first 100 files');
+	assert.equal(f[1].ready, false);
+	assert.ok(f[1].risky.includes('memory/zz.md'));
+	assert.deepEqual(f[2].risky, ['packages/app/foreman.config.json'], 'a config at any depth is risky');
+	assert.equal(f[3].needsMemoryApproval, false, 'the memory approval from before the rebase counts');
+	assert.equal(f[3].ready, true);
+	assert.equal(f[4].needsMemoryApproval, true);
+	assert.match(t.state().calls.join('\n'), /api --paginate repos\/o\/r\/pulls\/1\/files/);
+});
+
+test('readCrew: a PR that adds the memory\'s index is risky before the base has one', async () => {
+	const t = tickRepo('app.txt');
+	const pr = { number: 5, title: 'Set up memory', headRefName: 'm', headRefOid: '5'.repeat(40), isCrossRepository: false, isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', statusCheckRollup: [], closingIssuesReferences: [], files: [{ path: 'memory/MEMORY.md' }, { path: 'memory/a.md' }] };
+	const other = { ...pr, number: 6, files: [{ path: 'memory/a.md' }] };
+	writeFileSync(t.stateFile, JSON.stringify({ ...t.state(), openPrs: [pr, other] }));
+	const crew = await readCrew(t.config);
+	assert.deepEqual(crew.prs[0].foreman.risky, ['memory/MEMORY.md', 'memory/a.md']);
+	assert.equal(crew.prs[0].foreman.needsMemoryApproval, true);
+	assert.deepEqual(crew.prs[1].foreman.risky, [], 'no index on the base or in the PR: memory/ is just a folder');
 });
 
 test('watchdog session: runs the command and records how it ended', () => {

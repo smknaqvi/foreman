@@ -306,3 +306,52 @@ test('approve --memory writes the memory approval first: if the main one then fa
 	delete t.state.failStatus; t.save();
 	assert.match(t.merge([]).out, /isn't approved/, 'and merge refuses it');
 });
+
+test('a PR can\'t move the memory out of its way with a config of its own in a subfolder (cd sub && foreman merge)', () => {
+	const t = setup({ 'memory/b.md': 'x\n', 'sub/foreman.config.json': '{}\n' }, withMemory);
+	t.state.approved.push(t.pr); t.state.verify[t.pr] = 'success'; t.save();
+	const r = t.merge([], {}, 'sub');
+	assert.equal(r.merged, false, r.out);
+	assert.match(r.out, REFUSED);
+
+	// Several configs on the base: the top-most one says where the memory is, and merge says so.
+	const several = setup({ 'memory/b.md': 'x\n' }, { base: { ...withMemory.base, 'foreman.config.json': '{}\n', 'packages/app/foreman.config.json': '{"memory":{"dir":""}}\n' } });
+	several.state.approved.push(several.pr); several.save();
+	const out = several.merge([], {}, 'packages/app').out;
+	assert.match(out, REFUSED);
+	assert.match(out, /Several foreman\.config\.json files on origin\/main \(foreman\.config\.json, packages\/app\/foreman\.config\.json\): the shared memory follows the top-most, foreman\.config\.json/);
+});
+
+test('matches the memory folder whatever its case (Memory/x.md is memory/x.md on macOS and Windows)', () => {
+	const t = setup({ 'Memory/x.md': 'x\n' }, withMemory);
+	t.state.approved.push(t.pr); t.save();
+	assert.match(t.merge([]).out, REFUSED);
+});
+
+test('a merge interrupted after carrying only the main approval over finishes on retry; a changed PR doesn\'t borrow the memory approval', () => {
+	const t = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
+	t.state.approved.push(t.pr); t.state.memoryApproved = [t.pr]; t.save();
+	t.advanceMain({ 'other.txt': 'x\n' });
+	const head = t.rebase();
+	t.state.approved.push(head); t.save(); // The first run copied the main approval to the head, then stopped.
+	const r = t.merge(['--rebased-from', t.pr]);
+	assert.equal(r.merged, true, r.out);
+	assert.ok(t.state.memoryApproved.includes(head), 'the memory approval followed');
+
+	// The head approved on its own (main approval only), and more than a rebase of the memory-approved commit.
+	const u = setup({ 'memory/b.md': 'new fact\n' }, withMemory);
+	u.state.approved.push(u.pr); u.state.memoryApproved = [u.pr]; u.save();
+	u.advanceMain({ 'other.txt': 'x\n' });
+	const changed = u.rebase({ 'memory/c.md': 'unreviewed\n' });
+	u.state.approved.push(changed); u.save();
+	assert.match(u.merge(['--rebased-from', u.pr]).out, REFUSED);
+});
+
+test('the memory check comes before the approval is copied to a rebased head', () => {
+	const t = setup({ 'memory/b.md': 'x\n' }, withMemory);
+	t.state.approved.push(t.pr); t.save(); // Main approval only.
+	t.advanceMain({ 'other.txt': 'x\n' });
+	const head = t.rebase();
+	assert.match(t.merge(['--rebased-from', t.pr]).out, REFUSED);
+	assert.ok(!t.state.approved.includes(head), 'the head isn\'t left looking approved');
+});

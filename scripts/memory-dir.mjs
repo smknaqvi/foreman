@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
- * The shared memory's merge rule (lib/memory-rule.mjs) for scripts/merge.sh and approve.sh, run from the
- * checkout (its foreman.config.json, found from the working directory, says where in the repo the memory is):
+ * The shared memory's merge rule (lib/memory-rule.mjs) for scripts/merge.sh and approve.sh, run from anywhere
+ * in the checkout (where the memory is comes from the base branch's config, not the checkout's):
  *   memory-dir.mjs files <base ref> <head>   the memory files the PR at <head> changes, NUL-separated: none
  *                                            when the memory isn't set up on the base (and the PR doesn't
  *                                            add its index), or is switched off there
  *   memory-dir.mjs path <base ref>           the memory folder from the repo's top ('' when off)
  * Exits 1 when it can't tell (a commit it can't read): the scripts then refuse rather than guess.
  */
-import { findRoot } from '../lib/config.mjs';
 import { changedFiles, memoryFiles, memoryRule } from '../lib/memory-rule.mjs';
 
 const [what, ref, head] = process.argv.slice(2);
-const root = findRoot() || process.cwd();
+const root = process.cwd(); // Anywhere in the checkout: where the config is comes from the base, not from here.
 try {
 	const rule = memoryRule(root, ref);
+	if (rule.several.length) process.stderr.write(`Several foreman.config.json files on ${ref} (${rule.several.join(', ')}): the shared memory follows the top-most, ${rule.several[0]}.\n`);
 	if (what === 'path') process.stdout.write(`${rule.path}\n`);
 	else if (what === 'files') {
 		const files = memoryFiles(rule, changedFiles(root, ref, head));

@@ -6,8 +6,8 @@
  *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], memoryApproved?: [sha],
  *     verify: { sha: conclusion },
  *     failed: { sha: "names" }, checksPass, merged, origin?, mergedPrs?: [{ number, title, body, mergedAt, headRefName }] }
- * For `foreman tick` (lib/state.mjs's readCrew): { openPrs?: [PRs as `gh pr list --json` gives them] }; runs,
- * issues and earlier approvals are empty.
+ * For `foreman tick` (lib/state.mjs's readCrew): { openPrs?: [PRs as `gh pr list --json` gives them],
+ * forcePushes?, prFiles?: [every file of a PR with 100+] }; runs and issues are empty.
  * `pr list` calls are recorded in `calls`, so a test can check what was asked.
  */
 import { execFileSync } from 'node:child_process';
@@ -28,7 +28,9 @@ if (a === 'repo' && b === 'view') out(args.includes('owner,name') ? JSON.stringi
 else if ((a === 'run' || a === 'issue') && b === 'list') out('[]');
 else if (a === 'api' && b === 'graphql') { // Approvals from before a force-push: none.
 	const query = args.find((x) => x.startsWith('query=')) ?? '';
-	const repository = Object.fromEntries([...query.matchAll(/\b(p\d+):pullRequest/g)].map(([, k]) => [k, { timelineItems: { nodes: [] } }]));
+	// forcePushes?: { "<PR number>": [{ oid, contexts: [status contexts that succeeded on it] }] }
+	const node = ({ oid, contexts }) => ({ beforeCommit: { oid, statusCheckRollup: { state: 'SUCCESS' }, status: { contexts: contexts.map((context) => ({ context, state: 'SUCCESS' })) } } });
+	const repository = Object.fromEntries([...query.matchAll(/\bp(\d+):pullRequest/g)].map(([, n]) => [`p${n}`, { timelineItems: { nodes: (s.forcePushes?.[n] ?? []).map(node) } }]));
 	out(JSON.stringify({ data: { repository } }));
 } else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
@@ -48,6 +50,7 @@ else if (a === 'api' && b === 'graphql') { // Approvals from before a force-push
 		const name = args[args.indexOf('-f') + 1].replace(/^check_name=/, '');
 		out(name === (s.checkName ?? 'verify') ? s.verify[m[1]] ?? '' : '');
 	} else if ((m = ep.match(/commits\/(\w+)\/check-runs$/))) { if (s.failed[m[1]]) out(s.failed[m[1]].split(', ').join('\n')); }
+	else if (/\/pulls\/\d+\/files$/.test(ep)) { s.calls = [...(s.calls ?? []), args.join(' ')]; save(); out((s.prFiles ?? []).join('\n')); } // Every file, past gh pr list's 100.
 	else { process.stderr.write(`fake gh: unexpected api call ${ep}\n`); process.exit(2); }
 } else if (a === 'pr' && b === 'view') {
 	const json = args[args.indexOf('--json') + 1];
