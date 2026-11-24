@@ -1,16 +1,17 @@
 /**
  * The merge guard (lib/guard.mjs): it blocks merges, writes to the base branch and self-approval that
  * bypass `foreman merge` and `foreman approve`, and lets ordinary work through. Also runs the hook end to
- * end the way Claude Code calls it (through the CLI and through the shim `foreman init` installs), and
+ * end the way each agent tool calls it (through the CLI and through the shim `foreman init` installs), and
  * git's pre-push check.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { payloadCommand, refused, samplePayload } from '../lib/agents.mjs';
 import { blockedReason } from '../lib/guard.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -289,6 +290,49 @@ test('runs end to end through the shim `foreman init` installs', () => {
 	writeFileSync(join(project, 'node_modules/@smknaqvi/foreman/guard.mjs'), 'this is not javascript (');
 	assert.match(reason('gh pr merge 1'), /can't run/);
 	assert.equal(run('ls'), '');
+});
+
+test('answers every agent tool in its own format, and plain commands for any other', () => {
+	const repo = repoOn('feature');
+	const bin = join(ROOT, 'bin/foreman.mjs');
+	for (const agent of ['claude', 'codex', 'cursor', 'gemini']) {
+		const run = (command) => spawnSync('node', [bin, 'guard', '--agent', agent], { input: JSON.stringify(samplePayload(agent, command, repo)), encoding: 'utf8' });
+		assert.ok(refused(agent, run('gh pr merge 1')), `${agent} refuses a merge`);
+		assert.ok(refused(agent, run(`git push origin main`)), `${agent} refuses a push to main`);
+		const fine = run('git status');
+		assert.deepEqual([fine.stdout, fine.status], ['', 0], `${agent}: no answer at all for a fine command`);
+	}
+	const plain = spawnSync('node', [bin, 'guard', '--command', 'gh pr merge 1', '--cwd', repo], { encoding: 'utf8' });
+	assert.equal(plain.status, 2);
+	assert.match(plain.stderr, /merge/);
+	assert.equal(spawnSync('node', [bin, 'guard', '--command', 'gh pr view 1', '--cwd', repo]).status, 0);
+});
+
+test('the shim finds its checkout from its own location, for tools that set no project variable', () => {
+	const project = repoOn('feature');
+	mkdirSync(join(project, '.claude/hooks'), { recursive: true });
+	cpSync(join(ROOT, 'templates/claude/foreman-guard.mjs'), join(project, '.claude/hooks/foreman-guard.mjs'));
+	writeFileSync(join(project, 'package.json'), '{}');
+	mkdirSync(join(project, 'node_modules/@smknaqvi'), { recursive: true });
+	symlinkSync(ROOT, join(project, 'node_modules/@smknaqvi/foreman'));
+	const { CLAUDE_PROJECT_DIR: _, ...env } = process.env;
+	for (const agent of ['codex', 'cursor', 'gemini']) {
+		const run = (command) => spawnSync('node', [join(project, '.claude/hooks/foreman-guard.mjs'), '--agent', agent], { input: JSON.stringify(samplePayload(agent, command, project)), encoding: 'utf8', cwd: tmpdir(), env });
+		assert.ok(refused(agent, run('gh pr merge 1')), agent);
+		assert.equal(run('gh pr view 1').stdout, '', agent);
+	}
+	// Not installed: refused in that tool's own format, not Claude Code's.
+	unlinkSync(join(project, 'node_modules/@smknaqvi/foreman'));
+	const r = spawnSync('node', [join(project, '.claude/hooks/foreman-guard.mjs'), '--agent', 'cursor'], { input: JSON.stringify(samplePayload('cursor', 'gh pr view 1', project)), encoding: 'utf8', env });
+	assert.match(JSON.parse(r.stdout).agent_message, /isn't installed/);
+});
+
+test('reads the command from each tool\'s payload', () => {
+	assert.equal(payloadCommand({ tool_input: { command: 'gh pr merge 1' } }), 'gh pr merge 1');
+	assert.equal(payloadCommand({ command: 'gh pr merge 1' }), 'gh pr merge 1');
+	assert.equal(payloadCommand({ tool_input: { command: ['bash', '-lc', 'gh pr merge 1'] } }), 'gh pr merge 1');
+	assert.equal(payloadCommand({ tool_input: { command: ['gh', 'pr', 'merge', '1'] } }), 'gh pr merge 1');
+	assert.equal(payloadCommand({}), '');
 });
 
 test('git\'s pre-push check refuses pushes to the base branch only', () => {

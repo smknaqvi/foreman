@@ -9,6 +9,12 @@ description: Run the multi-agent loop as Coordinator: pick the next wave of issu
 
 You are the **Coordinator**. Builders each take one issue to a PR. You review and approve; the Builder merges through `foreman merge`, which refuses anything you didn't approve. The user reviews results through your summaries (and screenshots, for visual work), not by approving each merge.
 
+**Any coding agent can be the Coordinator or a Builder** (Claude Code, Codex, Cursor, Gemini CLI or another): everything here is git, `gh`, `npx --no-install foreman` and Markdown. Where a step needs something from your agent tool, it says what, then how Claude Code does it. Use your tool's equivalent:
+- **Launch a Builder:** start a separate agent session in its own git worktree, in the background, that you can message later. Claude Code: the Agent tool with `isolation: "worktree"`, `run_in_background: true`. Without one, give each Builder its own worktree (`git worktree add ../<repo>-issue-<N> -b <branch> origin/<base>`) and start your agent's CLI there with the prompt below.
+- **Message a Builder:** Claude Code: SendMessage. Otherwise resume its session, or comment on its PR and have it read the comments.
+- **Watch in the background:** keep `npx --no-install foreman observe` running and react to each line it prints. Claude Code: the Monitor tool. Otherwise run it in a background terminal and check its output, or poll `npx --no-install foreman observe --once`.
+- **Review a PR:** a careful read of its diff for bugs and for what the issue asks. Claude Code: `/code-review <level> <N>`.
+
 Settings live in `foreman.config.json`: the base branch, the required check, `hotspots`, `riskyPaths`, `playbooks`, `planFile`, `maxBuilders`, `env`. Read it, and AGENTS.md, first.
 
 **Start every session with `npx --no-install foreman status`,** and run it again when you come back to a session after a pause. It shows the base branch's CI, which issues have a Builder, each open PR's checks, approval and risky files, recent merges, whether the last agent session stopped at a usage limit, the watchdog, and local environments still running. It's built from GitHub and the machine, so it's the same picture after an interruption as before. **If it says a Coordinator started by the watchdog is running, don't start a second one:** follow it (`npx --no-install foreman watchdog status`), or take over with `npx --no-install foreman watchdog stop` first.
@@ -30,7 +36,7 @@ npx --no-install foreman claim <N> --branch <prefix>/issue-<N>-<slug> --port <po
 ```
 (`npx --no-install foreman release <N>` if you abandon it; closing the issue makes it irrelevant.)
 
-Then use the Agent tool, one per issue: `isolation: "worktree"`, `run_in_background: true`, a **unique port** each. In Conductor, take ports from your workspace's range (`$CONDUCTOR_PORT`+1 … +9); your own environment uses `$CONDUCTOR_PORT`. The prompt must be self-contained:
+Then launch one Builder per issue (above: its own worktree, in the background), with a **unique port** each. In Conductor, take ports from your workspace's range (`$CONDUCTOR_PORT`+1 … +9); your own environment uses `$CONDUCTOR_PORT`. The prompt must be self-contained:
 - read AGENTS.md, the `work-an-issue` skill and every playbook in `foreman.config.json`; then `gh issue view N`
 - `git checkout -b <branch>`, `npm install`, `npx --no-install foreman workspace --port <port>`, then start its environment as the playbooks say (`npx --no-install foreman env start` with the dev-server, nextjs and rails adapters)
 - never touch other environments or containers
@@ -38,16 +44,16 @@ Then use the Agent tool, one per issue: `isolation: "worktree"`, `run_in_backgro
 - the deliverable: a PR with `Closes #N`, a "Plan updates" section, green checks, and (for visual work) comparison image paths in its final report
 - then **stop and wait for review**; don't merge until told
 
-For a wave, start the **Observer**: run `npx --no-install foreman observe` with the Monitor tool (re-arm it when it expires, about every 30 minutes). It prints a line when a PR opens or merges, checks finish, the base branch's CI fails, or Docker memory runs high. It only reports; you decide. Checks that show as **queued** are waiting for a runner (a self-hosted one may be asleep): that isn't a failure, so don't re-push.
+For a wave, start the **Observer**: keep `npx --no-install foreman observe` running in the background (Claude Code: the Monitor tool; re-arm it when it expires, about every 30 minutes). It prints a line when a PR opens or merges, checks finish, the base branch's CI fails, or Docker memory runs high. It only reports; you decide. Checks that show as **queued** are waiting for a runner (a self-hosted one may be asleep): that isn't a failure, so don't re-push.
 
 ## 3. Review each PR as it arrives
 1. Look at what the Builder reports (screenshots, test output). Does it really do what the issue asks?
 2. `gh pr checks <N>` must be green.
-3. Note the head first (`sha=$(gh pr view <N> --json headRefOid --jq .headRefOid)`), then review the PR (e.g. `/code-review medium <N>`). For visual work, a preview deployment of the head (shown by `foreman status`) saves starting the Builder's environment.
+3. Note the head first (`sha=$(gh pr view <N> --json headRefOid --jq .headRefOid)`), then review the PR (Claude Code: `/code-review medium <N>`). For visual work, a preview deployment of the head (shown by `foreman status`) saves starting the Builder's environment.
 4. **Check it against the issue,** not just for bugs: every checklist item and "Done when", and nothing outside its lane. Read the diff as a skeptic.
-5. **Risky PRs get more** (`npx --no-install foreman status` marks them RISKY: `riskyPaths`, plus CI, Claude settings, git hooks, the config and the dependency files, which pin foreman itself). Review at a higher level and get a second opinion from a fresh Agent on a different model: "Does PR #<N> do what issue #<M> asks, and only that? What could it break?"
-6. Findings: SendMessage the Builder specific fixes, then re-review after it pushes.
-7. Approve: `npx --no-install foreman approve <N> "$sha"`. It stamps the reviewed commit and refuses if the PR moved on during review. Then SendMessage the Builder: "Approved at <full sha>. Follow the Merge section of work-an-issue, using that sha for --rebased-from." Anything pushed after this needs re-approval, except a pure rebase, which `foreman merge --rebased-from` verifies.
+5. **Risky PRs get more** (`npx --no-install foreman status` marks them RISKY: `riskyPaths`, plus CI, agent settings (`.claude/`, `.codex/`, `.cursor/`, `.gemini/`), git hooks, the config and the dependency files, which pin foreman itself). Review at a higher level and get a second opinion from a fresh agent session, ideally on a different model: "Does PR #<N> do what issue #<M> asks, and only that? What could it break?"
+6. Findings: message the Builder specific fixes, then re-review after it pushes.
+7. Approve: `npx --no-install foreman approve <N> "$sha"`. It stamps the reviewed commit and refuses if the PR moved on during review. Then message the Builder: "Approved at <full sha>. Follow the Merge section of work-an-issue, using that sha for --rebased-from." Anything pushed after this needs re-approval, except a pure rebase, which `foreman merge --rebased-from` verifies.
 8. After a merge, tell the Builders with open PRs to rebase (`git fetch && git rebase origin/<base>`, `npm install` if `package-lock.json` changed, push, re-check).
 
 ## 4. After merges
@@ -65,11 +71,11 @@ Usage limits or a closed session can stop agents mid-task, sometimes mid-merge, 
 
 Then continue from what actually happened.
 
-**Started by the watchdog?** You're running unattended: nobody answers questions. Finish only what's in flight (claimed issues, their PRs, approved PRs) and claim nothing new. Run Builders in the foreground (`run_in_background: false`; several Agent calls in one message still run at the same time), so your session lasts until they're done. Leave anything that needs a person with a comment saying what's needed, and end with a short summary.
+**Started by the watchdog?** You're running unattended: nobody answers questions. Finish only what's in flight (claimed issues, their PRs, approved PRs) and claim nothing new. Run Builders in the foreground, so your session lasts until they're done (Claude Code: `run_in_background: false`; several Agent calls in one message still run at the same time). Don't end while a Builder is still working. Leave anything that needs a person with a comment saying what's needed, and end with a short summary.
 
 ## Guardrails
 - Copy commit IDs from `gh` output; never type or recall them.
-- Merges go only through `foreman merge`. A Claude Code hook blocks `gh pr merge`, merge API calls, writes to the base branch and hand-written approvals for every agent; git's pre-push check refuses pushes to the base however they're typed. If the guard blocks something legitimate, fix it in foreman rather than working around it. Your own PRs go through the same review and merge.
+- Merges go only through `foreman merge`. The merge guard blocks `gh pr merge`, merge API calls, writes to the base branch and hand-written approvals, in every agent tool `foreman init` wired it into (`foreman doctor` lists them); git's pre-push check refuses pushes to the base however they're typed, from any tool. In a tool without the guard, the rule is yours to keep. If the guard blocks something legitimate, fix it in foreman rather than working around it. Your own PRs go through the same review and merge.
 - Agents never merge each other's PRs or edit the plan file.
 - Outward-facing actions beyond the repo (DNS, hosting, emails, posting publicly) need the user's explicit go-ahead.
 - Clean up: stop the Observer when the wave is done; Builders stop their environments when done.

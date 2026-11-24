@@ -149,3 +149,41 @@ test('guard --self-test: passes once init has run, fails when the pre-push check
 	writeFileSync(join(dir, '.githooks/pre-push'), '#!/usr/bin/env bash\nexit 0\n');
 	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}pre-push refuses main/.test(e.stdout));
 });
+
+test('init --agents wires the guard into each tool\'s own hook settings, once', () => {
+	const dir = repo();
+	cli(dir, 'init', '--agents', 'claude,codex,cursor,gemini');
+	const read = (f) => JSON.parse(readFileSync(join(dir, f), 'utf8'));
+	assert.equal(read('.claude/settings.json').hooks.PreToolUse[0].matcher, 'Bash');
+	const codex = read('.codex/hooks.json').hooks.PreToolUse[0];
+	assert.equal(codex.matcher, 'Bash');
+	assert.match(codex.hooks[0].command, /git rev-parse --show-toplevel.*--agent codex$/);
+	const cursor = read('.cursor/hooks.json');
+	assert.equal(cursor.version, 1);
+	assert.match(cursor.hooks.beforeShellExecution[0].command, /^node \.claude\/hooks\/foreman-guard\.mjs --agent cursor$/);
+	const gemini = read('.gemini/settings.json').hooks.BeforeTool[0];
+	assert.equal(gemini.matcher, 'run_shell_command');
+	assert.equal(gemini.hooks[0].timeout, 10000, 'Gemini CLI counts milliseconds');
+	cli(dir, 'init', '--agents', 'codex,cursor,gemini');
+	assert.equal(read('.codex/hooks.json').hooks.PreToolUse.length, 1, 'added once');
+	assert.equal(read('.cursor/hooks.json').hooks.beforeShellExecution.length, 1, 'added once');
+	assert.equal(read('.gemini/settings.json').hooks.BeforeTool.length, 1, 'added once');
+	assert.throws(() => cli(dir, 'init', '--agents', 'claude,windsurf'), (e) => /Unknown agent tool windsurf/.test(e.stderr));
+
+	// Every wired tool passes the self-test, each through its own payload and answer.
+	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
+	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
+	const out = cli(dir, 'guard', '--self-test');
+	assert.match(out, /23\/23 passed/);
+	assert.match(out, /Cursor: blocks gh pr merge/);
+});
+
+test('init without --agents: Claude Code, plus the tools whose folder the repo already has', () => {
+	const dir = repo();
+	mkdirSync(join(dir, '.cursor'));
+	cli(dir, 'init');
+	assert.ok(existsSync(join(dir, '.claude/settings.json')));
+	assert.ok(existsSync(join(dir, '.cursor/hooks.json')));
+	assert.ok(!existsSync(join(dir, '.codex/hooks.json')));
+	assert.ok(!existsSync(join(dir, '.gemini/settings.json')));
+});

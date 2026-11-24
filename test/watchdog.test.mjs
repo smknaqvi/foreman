@@ -170,6 +170,41 @@ test('classify: limited, ended, failed', () => {
 	assert.equal(classify(join(dir, 'none.jsonl'), { error: new Error('spawn claude ENOENT') }).outcome, 'failed');
 });
 
+test('classify: a tool without stream-json output ends by its exit code, and its limit wording is read', () => {
+	const dir = temp('foreman-session-plain-');
+	const f = join(dir, 'out.txt');
+	writeFileSync(f, 'Working...\nMerged #40. #12 waits on the team.\n');
+	const ended = classify(f, { status: 0 });
+	assert.equal(ended.outcome, 'ended');
+	assert.match(ended.summary, /Merged #40/);
+	writeFileSync(f, 'Error: 429 rate limit exceeded, try again later\n');
+	assert.equal(classify(f, { status: 1 }).outcome, 'limited');
+	writeFileSync(f, 'Done. Note: the API has a rate limit of 5000 requests.\n');
+	assert.equal(classify(f, { status: 0 }).outcome, 'ended', 'mentioning a limit in a good ending is not a stop');
+});
+
+test('decide: with a Coordinator command other than Claude Code and no staleMinutes, it says why it never acts', () => {
+	const r = d({ activity: { lastActiveAt: NOW - 180 * min, limited: null, observedAt: 0 }, settings: { ...base.settings, staleMinutes: 0, claude: false } });
+	assert.equal(r.launch, false);
+	assert.match(r.why, /set watchdog.staleMinutes/);
+	const stale = d({ activity: { lastActiveAt: NOW - 180 * min, limited: null, observedAt: 0 }, settings: { ...base.settings, staleMinutes: 60, claude: false } });
+	assert.equal(stale.launch, true);
+});
+
+test('agentActivity: any tool\'s git activity counts, so a quiet transcript folder isn\'t "nobody working"', () => {
+	const repo = temp('foreman-gitact-');
+	execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+	execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x']);
+	const projects = temp('foreman-noprojects-');
+	const before = agentActivity(repo, { dir: projects });
+	assert.ok(Date.now() - before.lastActiveAt < 60e3, 'a fresh commit is activity');
+	assert.equal(before.limited, null);
+	assert.equal(agentActivity(repo, { dir: projects, git: false }).lastActiveAt, 0, 'without git activity there is none');
+	writeFileSync(join(repo, 'new-file.txt'), 'edited by some agent');
+	utimesSync(join(repo, '.git/logs/HEAD'), new Date(Date.now() - 7200e3), new Date(Date.now() - 7200e3));
+	assert.ok(Date.now() - agentActivity(repo, { dir: projects }).lastActiveAt < 60e3, 'a new file is activity');
+});
+
 test('plist: a launchd job that runs a round every few minutes', () => {
 	const xml = plist({ label: 'com.example.w', program: ['/usr/bin/node', '/x/foreman.mjs', 'watchdog', 'run'], dir: '/repo-foreman', everyMinutes: 15, logFile: '/l.log', env: { PATH: '/a:/b&c' } });
 	assert.match(xml, /<key>StartInterval<\/key><integer>900<\/integer>/);

@@ -3,6 +3,10 @@
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
 ## Unreleased
+- **Any coding agent, not only Claude Code.**
+  - **The merge guard works in Codex, Cursor and Gemini CLI too.** `foreman init --agents claude,codex,cursor,gemini` wires it into each tool's project hooks (`.codex/hooks.json`, `.cursor/hooks.json`, `.gemini/settings.json`); without `--agents`, Claude Code plus any tool whose folder the repo has. The same shim answers each tool in its own format, and finds its checkout from its own location. `foreman guard --agent <tool>` reads that tool's payload; **`foreman guard --command "<cmd>"`** checks one command for any other tool's hooks (exit 2 when refused). `doctor` lists the wired tools; `guard --self-test` tests each one.
+  - **The playbooks are tool-neutral.** Each step says what it needs (a background agent in its own worktree, a message to it, a background `foreman observe`, a review), then how Claude Code does it.
+  - **The watchdog runs any agent CLI** (`watchdog.command`). Activity now also counts git activity in every worktree (HEAD moving, changed files), which any tool leaves. Only Claude Code's transcripts show usage-limit stops, so with another tool the watchdog acts after `staleMinutes`, and says so when that's 0. A Coordinator whose output isn't Claude Code's stream-json ends by its exit code, and "rate limit"/"quota" in a failed session's output counts as a limit stop.
 - **More environment adapters.**
   - `nextjs`, `rails` and `dev-server` (any command): a dev server per checkout on its own port. `foreman workspace --port` records the port, the new **`foreman env start`** runs the server in the background with `PORT` (and `vars`, e.g. a per-checkout `DATABASE_URL`) set and waits until it listens, and `foreman env remove` stops it. Running servers are found with `lsof` on the recorded ports, so ones started by hand count too.
   - `neon`: a Neon database branch per checkout, its connection string written to an env file. `foreman tick` deletes branches whose checkout is gone. Needs `NEON_API_KEY`.

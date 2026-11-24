@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * Installed by `foreman init`. Claude Code runs this before every Bash command (.claude/settings.json);
- * it hands the decision to the merge guard in the installed foreman package, so a foreman upgrade updates it.
+ * Installed by `foreman init`. Every agent tool it's wired into runs this before each shell command, saying which
+ * tool it is with --agent (none: Claude Code, from .claude/settings.json; codex from .codex/hooks.json, cursor
+ * from .cursor/hooks.json, gemini from .gemini/settings.json). It hands the decision to the merge guard in the
+ * installed foreman package, so a foreman upgrade updates it, and answers in that tool's format.
  * Whenever that guard can't be trusted to run, it refuses gh and git push commands (everything else runs):
  *   - foreman isn't installed in this checkout yet,
  *   - the installed foreman isn't the one package-lock.json pins (run npm install after a rebase),
@@ -10,14 +12,17 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PKG = '@smknaqvi/foreman';
-const root = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const at = process.argv.indexOf('--agent');
+const agent = (at > 0 && process.argv[at + 1]) || 'claude';
+// The checkout this file is in (<root>/.claude/hooks/), whichever tool runs it and from wherever.
+const root = process.env.CLAUDE_PROJECT_DIR || fileURLToPath(new URL('../..', import.meta.url));
 let raw = '';
 try { raw = readFileSync(0, 'utf8'); } catch {}
 let command = '';
-try { command = JSON.parse(raw || '{}').tool_input?.command ?? ''; } catch {}
+try { const p = JSON.parse(raw || '{}'); command = [p.tool_input?.command ?? p.command ?? ''].flat().join(' '); } catch {}
 const guarded = /\bgh\b|\bgit\b[^\n;&|]*\bpush\b/.test(command);
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 
@@ -43,5 +48,11 @@ try {
 } catch (e) {
 	if (guarded) reason = `The merge guard can't run (${e.message}), so it refuses gh and git push commands until that's fixed.`;
 }
+// Each tool's way of saying no (lib/agents.mjs, refusal()). An allowed command gets no output.
+const answers = {
+	cursor: (r) => ({ continue: true, permission: 'deny', user_message: r, agent_message: r }),
+	gemini: (r) => ({ decision: 'deny', reason: r }),
+	claude: (r) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: r } }),
+};
 // No process.exit(): exiting at once can cut off the answer while it's still being written to the pipe.
-if (reason) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
+if (reason) process.stdout.write(JSON.stringify((answers[agent] || answers.claude)(reason)));
