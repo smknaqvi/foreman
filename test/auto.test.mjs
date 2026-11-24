@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { autoApprove, checkChange, parseDiff } from '../lib/auto.mjs';
+import { autoApprove, checkAuthors, checkChange, compareVersions, parseDiff } from '../lib/auto.mjs';
 import { DEFAULTS, loadConfig } from '../lib/config.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -61,12 +61,41 @@ test('parseDiff: changed lines come from hunks only, whatever they start with', 
 	]);
 });
 
-test('checkChange with versionsOnly: a line may only change its numbers', () => {
+test('checkChange with versionsOnly: a line may only change its versions, and only upwards', () => {
 	const strict = { ...RULE, versionsOnly: true };
-	assert.equal(checkChange(strict, { files: [file('versions.json', ['-  "left-pad": "1.2.0",', '+  "left-pad": "1.10.3",'])] }), '');
+	const bump = (from, to) => checkChange(strict, { files: [file('versions.json', [`-  "left-pad": "${from}",`, `+  "left-pad": "${to}",`])] });
+	assert.equal(bump('1.2.0', '1.10.3'), '');
+	assert.equal(bump('6.18.3', '6.18.4.1'), '', 'a version gaining a part');
+	assert.equal(bump('7.2', '7.2.1'), '');
+	assert.equal(bump('6.18.4.1', '6.19'), '', 'and losing one');
+	assert.match(bump('1.3.0', '1.2.9'), /goes from 1\.3\.0 to 1\.2\.9, which isn't an upgrade/, 'a rollback');
+	assert.match(bump('7.2.1', '7.2'), /isn't an upgrade/);
+	assert.match(bump('7.2', '7.2.0'), /isn't an upgrade/, 'the same version written differently');
+	// Two versions on one line: each that changed must go up.
+	const two = (to) => checkChange({ ...strict, files: { 'a.txt': '.*' } }, { files: [file('a.txt', ['-core 7.1 plugin 6.18', `+core ${to}`])] });
+	assert.equal(two('7.2 plugin 6.18'), '');
+	assert.match(two('7.2 plugin 6.17'), /goes from 6\.18 to 6\.17/);
 	assert.match(checkChange(strict, { files: [file('versions.json', ['-  "left-pad": "1.2.0",', '+  "evil-pad": "1.2.1",'])] }), /more than version numbers/, 'a swapped name');
 	assert.match(checkChange(strict, { files: [file('versions.json', ['+  "extra": "1.0.0",'])] }), /more than version numbers/, 'a line only added');
 	assert.equal(checkChange(RULE, { files: [file('versions.json', ['-  "left-pad": "1.2.0",', '+  "evil-pad": "1.2.1",'])] }), '', 'without it, the line pattern alone decides');
+});
+
+test('compareVersions: part by part, a missing part counting as 0', () => {
+	assert.deepEqual([compareVersions('1.10', '1.9'), compareVersions('7.2', '7.2.0'), compareVersions('7.2', '7.2.1'), compareVersions('99999999999999999999', '99999999999999999998')], [1, 0, -1, 1]);
+});
+
+test('checkAuthors: only the trusted accounts open the PR and make its commits', () => {
+	const bot = { login: 'github-actions[bot]' };
+	const pr = { author: { login: 'app/github-actions', is_bot: true } };
+	const commit = (author, committer = author, email = '') => ({ sha: 'abcdef1234', author, committer, commit: { author: { email }, committer: { email } } });
+	assert.equal(checkAuthors(RULE, pr, [commit(bot)]), '', "by default GitHub Actions' bot, however it's written");
+	assert.match(checkAuthors(RULE, { author: { login: 'mallory' } }, [commit(bot)]), /opened by mallory, not github-actions\[bot\]/);
+	assert.match(checkAuthors(RULE, pr, [commit(bot), commit({ login: 'mallory' })]), /commit abcdef1's author is mallory/);
+	assert.match(checkAuthors(RULE, pr, [commit(bot, { login: 'mallory' })]), /committer is mallory/);
+	assert.match(checkAuthors(RULE, pr, [commit(null, null, 'x@y')]), /author is x@y \(no GitHub account\)/);
+	const renovate = { ...RULE, authors: ['app/renovate', 'alice'] };
+	assert.equal(checkAuthors(renovate, { author: { login: 'alice' } }, [commit({ login: 'renovate[bot]' }, { login: 'alice' })]), '');
+	assert.match(checkAuthors(renovate, pr, [commit(bot)]), /opened by github-actions\[bot\], not renovate\[bot\] or alice/);
 });
 
 test('config: autoApprove rules are checked', () => {
@@ -75,6 +104,8 @@ test('config: autoApprove rules are checked', () => {
 	assert.throws(() => loadConfig(dir), (e) => /autoApprove\[0\]\.name/.test(e.message) && /\.branch/.test(e.message) && /\.files/.test(e.message));
 	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ autoApprove: [{ ...RULE, files: { a: 'x)|(.*' } }] }));
 	assert.throws(() => loadConfig(dir), /autoApprove\[0\]\.files\["a"\]/, "a pattern can't close the anchors it's wrapped in");
+	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ autoApprove: [{ ...RULE, authors: [] }] }));
+	assert.throws(() => loadConfig(dir), /autoApprove\[0\]\.authors/);
 	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ autoApprove: [RULE] }));
 	assert.equal(loadConfig(dir).autoApprove[0].name, 'version pins');
 	assert.deepEqual(DEFAULTS.autoApprove, [], 'off unless a repo asks for it');
@@ -86,7 +117,7 @@ const bin = temp('foreman-bin-');
 copyFileSync(join(ROOT, 'test/fake-gh.mjs'), join(bin, 'gh'));
 chmodSync(join(bin, 'gh'), 0o755);
 
-function repo({ branch = 'deps/2026-10-30', change = '  "left-pad": "1.3.0"\n', verify = 'success', chmod = false, runs = [], rules = [RULE], config = {} } = {}) {
+function repo({ branch = 'deps/2026-10-30', change = '  "left-pad": "1.3.0"\n', verify = 'success', chmod = false, runs = [], rules = [RULE], config = {}, gh = {}, author } = {}) {
 	const dir = temp('foreman-auto-');
 	const origin = join(dir, 'origin.git'), work = join(dir, 'work');
 	execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
@@ -107,7 +138,7 @@ function repo({ branch = 'deps/2026-10-30', change = '  "left-pad": "1.3.0"\n', 
 	commit('README.md', 'main moves on\n');
 	git('push', '-q', 'origin', 'main');
 	const stateFile = join(dir, 'gh.json');
-	writeFileSync(stateFile, JSON.stringify({ repo: 'o/r', origin, pr: { state: 'OPEN', isDraft: false, head: pr, mergeable: 'MERGEABLE', branch }, approved: [], verify: { [pr]: verify }, failed: {}, checksPass: true, merged: false, runs }));
+	writeFileSync(stateFile, JSON.stringify({ repo: 'o/r', origin, pr: { state: 'OPEN', isDraft: false, head: pr, mergeable: 'MERGEABLE', branch, author }, approved: [], verify: { [pr]: verify }, failed: {}, checksPass: true, merged: false, runs, ...(typeof gh === 'function' ? gh(pr) : gh) }));
 	process.env.PATH = `${bin}:${process.env.PATH.split(':').filter((p) => p !== bin).join(':')}`;
 	process.env.FAKE_GH_STATE = stateFile;
 	process.env.FOREMAN_LOCK_WAIT = '1';
@@ -115,7 +146,7 @@ function repo({ branch = 'deps/2026-10-30', change = '  "left-pad": "1.3.0"\n', 
 	process.env.GIT_AUTHOR_EMAIL = process.env.GIT_COMMITTER_EMAIL = 't@t';
 	const conf = { ...DEFAULTS, autoApprove: rules, root: work, ...config };
 	const branchOnOrigin = () => execFileSync('git', ['-C', origin, 'rev-parse', `refs/heads/${branch}`], { encoding: 'utf8' }).trim();
-	return { config: conf, pr, branchOnOrigin, state: () => JSON.parse(readFileSync(stateFile, 'utf8')) };
+	return { config: conf, pr, work, branchOnOrigin, git, state: () => JSON.parse(readFileSync(stateFile, 'utf8')) };
 }
 
 test('auto-approve --merge: a version-only PR whose check passed is approved, rebased and merged', async () => {
@@ -129,8 +160,18 @@ test('auto-approve --merge: a version-only PR whose check passed is approved, re
 test('auto-approve: anything outside the rule, or a check not yet passed, is left for a person', async () => {
 	for (const [opts, reason] of [
 		[{ change: '  "left-pad": "1.3.0",\n  "scripts": "rm -rf /"\n' }, /isn't one the rule allows/],
-		[{ verify: 'failure' }, /hasn't passed/],
-		[{ verify: '' }, /hasn't passed/],
+		[{ verify: 'failure' }, /checks failed on \w+: verify/],
+		[{ verify: '' }, /verify hasn't passed/],
+		// Every check on the head counts, not only the required one: another failed, a re-run still going, a pending status.
+		[{ gh: (sha) => ({ failed: { [sha]: 'lint' } }) }, /checks failed on \w+: lint/],
+		[{ gh: (sha) => ({ checks: { [sha]: [{ id: 1, name: 'verify', status: 'completed', conclusion: 'success' }, { id: 2, name: 'verify', status: 'in_progress', conclusion: null }] } }) }, /still running on \w+: verify/],
+		[{ gh: (sha) => ({ statuses: { [sha]: [{ context: 'deploy-preview', state: 'pending' }] } }) }, /still running on \w+: deploy-preview/],
+		[{ gh: (sha) => ({ checks: { [sha]: [{ id: 2, name: 'verify', status: 'completed', conclusion: 'failure' }, { id: 1, name: 'verify', status: 'completed', conclusion: 'success' }] } }) }, /checks failed on \w+: verify/], // The newest run counts.
+		// Only GitHub Actions' bot (by default) may open it and make its commits.
+		[{ author: { login: 'mallory' } }, /opened by mallory/],
+		[{ gh: (sha) => ({ prCommits: [{ sha, author: { login: 'github-actions[bot]' }, committer: { login: 'mallory' } }] }) }, /committer is mallory/],
+		[{ gh: (sha) => ({ prCommits: [{ sha: 'aaaaaaa1', author: { login: 'mallory' }, committer: { login: 'mallory' } }, { sha, author: { login: 'github-actions[bot]' }, committer: { login: 'github-actions[bot]' } }] }) }, /commit aaaaaaa's author is mallory/],
+		[{ change: '  "left-pad": "1.1.0"\n', rules: [{ ...RULE, versionsOnly: true }] }, /goes from 1\.2\.0 to 1\.1\.0, which isn't an upgrade/], // A rollback.
 		[{ change: '  "left-pad": "1.3.0"\n++ evil\n' }, /isn't one the rule allows: \+\+\+ evil/], // A line '++ evil' added (shown as '+++ evil').
 		[{ change: '  "left-pad": "1.2.0"\n', chmod: true }, /file mode of versions\.json \(100644 → 100755\)/], // Only made executable.
 		[{ change: '  "left-pad": "1.3.0", "x": "1"\n' }, /isn't one the rule allows/], // Contains a version, but is more.
@@ -164,17 +205,42 @@ test("auto-approve --merge: approves but doesn't merge while the base branch's C
 	const t = repo({ runs: [{ workflowName: 'CI', status: 'completed', conclusion: 'failure', event: 'push' }] });
 	const said = [];
 	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 0, said.join('\n'));
-	assert.match(said.join('\n'), /Not merging it: main's CI is failing \(CI\)/);
+	assert.match(said.join('\n'), /Not merging it yet: main's CI is failing \(CI\)\. The next run .* merges it once main is green/);
 	assert.ok(t.state().approved.includes(t.pr));
 	assert.equal(t.state().merged, false);
 	assert.equal(t.branchOnOrigin(), t.pr, 'not rebased either');
+	// A hand-started run counts too: one that passed after the failed push means main is green again.
+	const u = repo({ runs: [{ workflowName: 'CI', status: 'completed', conclusion: 'success', event: 'workflow_dispatch' }, { workflowName: 'CI', status: 'completed', conclusion: 'failure', event: 'push' }] });
+	const heard = [];
+	assert.equal(await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) }), 0, heard.join('\n'));
+	assert.equal(u.state().merged, true, heard.join('\n'));
+});
+
+test('auto-approve: an approval already on the head is not posted again', async () => {
+	const t = repo();
+	const said = [];
+	await autoApprove(t.config, { log: (m) => said.push(m) });
+	await autoApprove(t.config, { log: (m) => said.push(m) });
+	assert.deepEqual(t.state().approved, [t.pr], said.join('\n'));
+	assert.match(said.join('\n'), /PR #7 is already approved at/);
+});
+
+test('auto-approve without a requiredCheck: every check on the exact head must be green', async () => {
+	const t = repo({ config: { requiredCheck: '' }, gh: (sha) => ({ checks: { [sha]: [{ id: 1, name: 'test', status: 'completed', conclusion: 'success' }] } }) });
+	const said = [];
+	await autoApprove(t.config, { log: (m) => said.push(m) });
+	assert.deepEqual(t.state().approved, [t.pr], said.join('\n'));
+	const u = repo({ config: { requiredCheck: '' }, verify: '' });
+	await autoApprove(u.config, { log: (m) => said.push(m) });
+	assert.match(said.join('\n'), /no checks have run on/);
+	assert.deepEqual(u.state().approved, []);
 });
 
 test('auto-approve --merge: a PR that would wait for its rebased head\'s own checks is left, with the reason', async () => {
 	const t = repo({ config: { staleCheckPaths: ['README.md'] } }); // main changed README.md after the PR branched.
 	const said = [];
 	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 1, said.join('\n'));
-	assert.match(said.join('\n'), /needs its checks re-run on the rebased head \(main changed README\.md since it was checked\).*a person or agent must push or re-run/);
+	assert.match(said.join('\n'), /needs its checks re-run on the rebased head \(main changed README\.md since \w+ was checked\).*a person or agent must push or re-run/);
 	assert.equal(t.state().merged, false);
 	assert.equal(t.branchOnOrigin(), t.pr, "not rebased: that push would start no checks");
 
@@ -182,12 +248,40 @@ test('auto-approve --merge: a PR that would wait for its rebased head\'s own che
 	const heard = [];
 	assert.equal(await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) }), 0, heard.join('\n'));
 	assert.equal(u.state().merged, true, heard.join('\n'));
+
+	// No required check whose result could carry over (merge.sh decides, through its --would-wait mode).
+	const v = repo({ config: { requiredCheck: '' } });
+	const v1 = [];
+	assert.equal(await autoApprove(v.config, { merge: true, log: (m) => v1.push(m) }), 1, v1.join('\n'));
+	assert.match(v1.join('\n'), /\(there is no required check whose result carries over\)/);
+	assert.equal(v.state().merged, false);
+
+	// A change merge.sh counts as docs only waits for no checks at all, stale paths or not.
+	const w = repo({ config: { staleCheckPaths: ['README.md'], docsOnly: '\\.json$' } });
+	const w1 = [];
+	assert.equal(await autoApprove(w.config, { merge: true, log: (m) => w1.push(m) }), 0, w1.join('\n'));
+	assert.equal(w.state().merged, true, w1.join('\n'));
 });
 
-test('auto-approve --dry-run changes nothing', async () => {
+test('auto-approve --dry-run changes nothing, and reads the change from GitHub', async () => {
 	const t = repo();
+	const before = t.git('rev-parse', 'origin/main~1');
+	t.git('update-ref', 'refs/remotes/origin/main', before); // So a fetch would show.
 	const said = [];
 	await autoApprove(t.config, { merge: true, dryRun: true, log: (m) => said.push(m) });
-	assert.match(said.join('\n'), /would approve PR #7/);
+	assert.match(said.join('\n'), /would approve PR #7 at \w+ \(version pins\) and merge it/);
 	assert.deepEqual([t.state().approved, t.state().merged], [[], false]);
+	assert.equal(t.git('rev-parse', 'origin/main'), before, "origin/main didn't move: nothing was fetched");
+	assert.equal(t.git('for-each-ref', 'refs/foreman/'), '', 'no refs left or made');
+
+	for (const [opts, reason] of [
+		[{ change: '  "left-pad": "1.3.0"\n++ evil\n' }, /isn't one the rule allows: \+\+\+ evil/],
+		[{ change: '  "left-pad": "1.2.0"\n', chmod: true }, /file mode of versions\.json/],
+		[{ change: '  "left-pad": "1.1.0"\n', rules: [{ ...RULE, versionsOnly: true }] }, /isn't an upgrade/],
+	]) {
+		const u = repo(opts);
+		const heard = [];
+		await autoApprove(u.config, { dryRun: true, log: (m) => heard.push(m) });
+		assert.match(heard.join('\n'), reason);
+	}
 });

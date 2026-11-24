@@ -20,7 +20,7 @@ Coordinator
   tick [--dry-run]                        what needs no judgement: merge approved, green PRs (clean rebases
                                           only) and remove orphaned environments
   auto-approve [--merge] [--dry-run]      approve open PRs an autoApprove rule covers (e.g. version pins
-                                          only) once their required check passed; --merge also merges them
+                                          only) once every check on their head passed; --merge also merges them
                                           (for CI: no Coordinator needed)
 
 When every agent stops (a usage limit)

@@ -12,6 +12,9 @@
 # against the same base.
 # Usage (through the CLI, which sets the environment from foreman.config.json):
 #   foreman merge <PR number> [--rebased-from <approved commit sha>]
+# Or, changing nothing: merge.sh --would-wait <approved sha>. After a clean rebase of that commit onto origin/<base>,
+# would the merge wait for the rebased head's own checks (exit 3, the reason on stdout) or reuse that commit's
+# (exit 0)? foreman auto-approve asks before rebasing from CI, where a push starts no checks. Any other exit: error.
 set -euo pipefail
 base="${FOREMAN_BASE:-main}"
 context="${FOREMAN_APPROVAL_CONTEXT:-coordinator-review}"
@@ -19,6 +22,32 @@ required="${FOREMAN_REQUIRED_CHECK-verify}"
 stale_paths="${FOREMAN_STALE_PATHS:-}" # One per line.
 docs_only="${FOREMAN_DOCS_ONLY-\.md$}" # Empty: no PR counts as docs-only.
 lock_wait="${FOREMAN_LOCK_WAIT:-60}" # Tries, 5 seconds apart.
+
+# Does every file changed between $1 and $2 match $docs_only? (Then no check is waited for.)
+docs_only_change() {
+	local files rc=0
+	files=$(git diff --name-only --no-renames "$1" "$2") # Captured first: grep -q exiting early must not count.
+	[ -n "$files" ] && [ -n "$docs_only" ] || return 1
+	grep -qvE -- "$docs_only" <<<"$files" || rc=$? # 1: every file matched. 2: a bad pattern, which must not count.
+	[ "$rc" = 2 ] && echo "docsOnly ($docs_only) isn't a pattern grep -E understands: treating the change as code." >&2
+	[ "$rc" = 1 ]
+}
+# Did any of $stale_paths change on the base since commit $1 was checked? Prints them if so.
+stale_since() {
+	[ -n "$stale_paths" ] || return 1
+	local stale
+	set -f; IFS=$'\n'; stale=($stale_paths); unset IFS; set +f
+	git diff --quiet "$(git merge-base "$1" "origin/$base")" "origin/$base" -- "${stale[@]}" && return 1
+	echo "${stale[*]}"
+}
+
+if [ "${1:-}" = "--would-wait" ]; then
+	sha="${2:?--would-wait needs the approved commit sha}"
+	docs_only_change "$(git merge-base "origin/$base" "$sha")" "$sha" && exit 0 # No checks waited for at all.
+	[ -n "$required" ] || { echo "there is no required check whose result carries over"; exit 3; }
+	if changed=$(stale_since "$sha"); then echo "$base changed $changed since ${sha:0:7} was checked"; exit 3; fi
+	exit 0
+fi
 
 pr="${1:?usage: foreman merge <PR number> [--rebased-from <sha>]}"
 rebased_from=""
@@ -72,14 +101,11 @@ if ! approved "$head"; then
 			checked="$rebased_from" # Its checks already ran on the approved change.
 			if [ -z "$required" ]; then
 				checked="$head" # No named check to reuse: wait for the head's own.
-			elif [ -n "$stale_paths" ]; then
-				# Unless something the checks compare against changed on the base since then: the approved
-				# commit was never checked against it, so wait for the head's own checks (the approval stands).
-				set -f; IFS=$'\n'; stale=($stale_paths); unset IFS; set +f
-				if ! git diff --quiet "$(git merge-base "$rebased_from" "origin/$base")" "origin/$base" -- "${stale[@]}"; then
-					echo "$base changed ${stale[*]} since ${rebased_from:0:7} was checked: waiting for ${head:0:7}'s own checks."
-					checked="$head"
-				fi
+			elif changed=$(stale_since "$rebased_from"); then
+				# Something the checks compare against changed on the base since then: the approved commit was
+				# never checked against it, so wait for the head's own checks (the approval stands).
+				echo "$base changed $changed since ${rebased_from:0:7} was checked: waiting for ${head:0:7}'s own checks."
+				checked="$head"
 			fi
 		else
 			echo "PR #$pr changed since approval at ${rebased_from:0:7} (not just a rebase). Ask the Coordinator to re-review." >&2
@@ -94,15 +120,9 @@ fi
 # 3. The required check must have run and passed (not just "nothing failed yet"): on this exact commit, or
 #    on the approved commit for a clean rebase. On the head itself, every other check must be green too
 #    (gh exits non-zero if any check failed or is pending). Docs-only PRs skip this.
-files=$(git diff --name-only --no-renames "origin/$base" "$head") # Captured first: grep -q exiting early must not count.
-if [ -n "$files" ] && [ -n "$docs_only" ]; then
-	rc=0; grep -qvE -- "$docs_only" <<<"$files" || rc=$? # 1: every file matched. 2: a bad pattern, which must not count.
-	if [ "$rc" = 1 ]; then
-		echo "PR #$pr only changes documentation: not waiting for checks."
-		checked=""
-	elif [ "$rc" = 2 ]; then
-		echo "docsOnly ($docs_only) isn't a pattern grep -E understands: treating PR #$pr as code." >&2
-	fi
+if docs_only_change "origin/$base" "$head"; then
+	echo "PR #$pr only changes documentation: not waiting for checks."
+	checked=""
 fi
 if [ -n "$checked" ] && [ -n "$required" ]; then
 	# -X GET -f encodes the name into the query, so names with spaces or & work ("Build & Test").

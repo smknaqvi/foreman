@@ -309,14 +309,15 @@ test('watchdog stop never signals a process that only shares the recorded pid', 
 	assert.match(out, /No Coordinator started by the watchdog is running/);
 });
 
-test('baseFailing: a later hand-started run doesn\'t hide a failed push run', async () => {
-	const { baseFailing } = await import('../lib/state.mjs');
-	const runs = [
-		{ workflowName: 'Deploy', event: 'workflow_dispatch', status: 'completed', conclusion: 'success' },
-		{ workflowName: 'Deploy', event: 'push', status: 'completed', conclusion: 'failure' },
-	];
-	const latest = (list) => [...new Map([...list].reverse().map((r) => [r.workflowName, r])).values()].reverse();
-	assert.equal(baseFailing({ runs: latest(runs), pushRuns: latest(runs.filter((r) => r.event === 'push')) }).length, 1);
+test('baseFailing: the newest push or hand-started run of each workflow counts; scheduled runs never do', async () => {
+	const { baseFailing, baseRuns } = await import('../lib/state.mjs');
+	const red = (runs) => baseFailing({ pushRuns: baseRuns(runs) }).map((r) => r.workflowName);
+	const run = (workflowName, event, conclusion) => ({ workflowName, event, status: 'completed', conclusion });
+	// Newest first, as gh run list gives them.
+	assert.deepEqual(red([run('Deploy', 'schedule', 'success'), run('Deploy', 'push', 'failure')]), ['Deploy'], "a scheduled run doesn't hide a failure");
+	assert.deepEqual(red([run('Verify', 'workflow_dispatch', 'failure'), run('Verify', 'push', 'success')]), ['Verify'], 'a hand-started run (after a CI-token merge) counts');
+	assert.deepEqual(red([run('Verify', 'workflow_dispatch', 'success'), run('Verify', 'push', 'failure')]), [], 'and the newest one wins');
+	assert.deepEqual(red([run('Nightly', 'schedule', 'failure')]), []);
 });
 
 test('prepare: keeps an earlier Coordinator\'s leftovers on a branch, moves to the latest base, survives a deleted folder', async () => {

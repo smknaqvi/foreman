@@ -120,7 +120,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `merge <PR> [--rebased-from <sha>]` | The only way in. See [How the gate works](#how-the-gate-works) |
 | `observe [--once]` | One line per event: PR opened or closed, checks finished, a preview deployment ready, base CI failed, Docker memory high. Meant to run in the background while the Coordinator works (Claude Code: the Monitor tool). Also sends [notifications](#notifications) |
 | `dashboard [--port <p>] [--open]` | The crew in a browser, live: what `status` shows plus a feed of what `observe` would print. See [Dashboard](#dashboard) |
-| `auto-approve [--merge] [--dry-run]` | Approve, without a Coordinator, open PRs an `autoApprove` rule covers (e.g. version pins only) once their required check passed; `--merge` also merges them like `tick`. For CI. See [Approving routine updates without a Coordinator](#approving-routine-updates-without-a-coordinator) |
+| `auto-approve [--merge] [--dry-run]` | Approve, without a Coordinator, open PRs an `autoApprove` rule covers (e.g. version pins from a trusted bot) once every check on their head passed; `--merge` also merges them like `tick`. For CI. See [Approving routine updates without a Coordinator](#approving-routine-updates-without-a-coordinator) |
 | `tick [--dry-run]` | The steps that need no judgement: rebase approved, green PRs onto the base (clean rebases only) and merge them through `merge`; remove orphaned environments. Never reviews or approves |
 | `watchdog install\|uninstall\|status\|pause\|unpause\|stop\|run` | Keeps the crew going after a usage limit. See [When every agent stops](#when-every-agent-stops) |
 | `env start [--port <p>]` | Start this checkout's dev server in the background on its port and wait until it listens (`dev-server`, `nextjs`, `rails`) |
@@ -333,9 +333,16 @@ Some PRs are so narrow that a rule can check them as well as a review would: a b
 }]
 ```
 
-Every pattern must match the whole branch name or line, as if wrapped in `^(?:…)$`: a line that merely contains a version doesn't pass. A PR is approved only if its branch matches, it isn't from a fork or a draft, every file it changes is listed (and edited: not added, deleted, binary or changed in mode), every line it adds or removes matches that file's pattern (and, with `versionsOnly`, differs from the line it replaces only in its numbers, so a name can't be swapped), and `requiredCheck` passed on its head. When several rules match the branch, any one that accepts the change is enough. Anything else is left open, with the reason printed. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind), and like `tick` merges nothing while the base branch's CI is red. Keep the patterns tight: they are the review.
+Every pattern must match the whole branch name or line, as if wrapped in `^(?:…)$`: a line that merely contains a version doesn't pass. A PR is approved only if all of this holds:
+- its branch matches, and it isn't from a fork or a draft;
+- the accounts that opened it, and authored and committed each of its commits, are in the rule's `authors` (by default only GitHub Actions' bot, `github-actions[bot]`; a bot can also be written the way `gh` shows it, `app/github-actions`). A commit someone else added, or a rebase someone pushed, leaves it for a person;
+- every file it changes is listed, and edited: not added, deleted, binary or changed in mode;
+- every line it adds or removes matches that file's pattern. With `versionsOnly`, each line also differs from the line it replaces only in its versions (dotted numbers, so 6.18.3 → 6.18.4.1 counts), so a name can't be swapped, and each version that changed goes up: a rollback is left for a person;
+- every check on its head commit is green: the newest run of each check (a re-run still going counts as pending) and every commit status, with `requiredCheck`, if set, among them.
 
-Run it from CI once the PR's check finishes: a workflow on `workflow_run` of the check, checking out the base branch (never the PR's code):
+When several rules match the branch, any one that accepts the PR is enough. Anything else is left open, with the reason printed. An approval already on the head isn't posted again. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind), and like `tick` merges nothing while the base branch's CI is red (the newest push or hand-started run of some workflow failed): the PR stays approved, and the next run merges it once the base is green. `--dry-run` reads everything from GitHub's API (its compare view of the PR, which doesn't show every mode change) and changes nothing, locally or on GitHub. Keep the patterns tight: they are the review.
+
+Run it from CI once the PR's check finishes, and on a schedule so a PR held back by a red base merges once it's green: a workflow checking out the base branch (never the PR's code):
 
 ```yaml
 name: Auto-approve
@@ -343,6 +350,8 @@ on:
   workflow_run:
     workflows: [verify]          # The workflow that runs requiredCheck.
     types: [completed]
+  schedule:
+    - cron: "17 * * * *"         # Hourly: merges what waited for a red base branch.
 concurrency: foreman-auto-approve  # One at a time, so two runs never merge at once.
 permissions:
   contents: write       # Push a rebased head.
@@ -352,19 +361,22 @@ permissions:
   actions: write        # Only to start the base branch's checks after merging (below).
 jobs:
   auto-approve:
-    if: github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'plugin-updates/')
+    if: github.event_name == 'schedule' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'plugin-updates/'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with: { ref: main, fetch-depth: 0 }  # Full history: the diff needs the PR's merge base.
       - run: npm ci
+      - run: |                     # Who a rebase is committed as.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - run: npx --no-install foreman auto-approve --merge
         env: { GH_TOKEN: "${{ github.token }}" }
 ```
 
 (With a shallow checkout, `auto-approve` fetches the full history itself first.) Two things a workflow's `GITHUB_TOKEN` doesn't do, by GitHub's design: a push made with it starts no checks, and neither does a merge. So:
-- When a PR is behind, `--merge` rebases it and reuses the checks its approved commit passed. If it couldn't (no `requiredCheck`, or a `staleCheckPaths` path changed on the base since), the rebased head would need checks of its own that would never start: `auto-approve` leaves such a PR as it is and says it needs its checks re-run on the rebased head, for a person or agent to push or re-run.
-- If a deploy follows the base branch's checks, have the job start them after merging (`gh workflow run <check>.yml --ref main`).
+- When a PR is behind, `--merge` rebases it and reuses the checks its approved commit passed. If it couldn't (`foreman merge` would wait for the rebased head's own checks: no `requiredCheck`, or a `staleCheckPaths` path changed on the base since, unless the change is docs only), those checks would never start: `auto-approve` leaves such a PR as it is and says it needs its checks re-run on the rebased head, for a person or agent to push or re-run.
+- If a deploy follows the base branch's checks, have the job start them after merging (`gh workflow run <check>.yml --ref main`). Those hand-started runs count when `tick` and `auto-approve` ask whether the base is red.
 
 ## Running the checks on your own machine
 
