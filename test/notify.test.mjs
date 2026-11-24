@@ -123,7 +123,7 @@ test('notify check: labeled issues once each, again after the label comes back; 
 	const config = repo();
 	await quiet(() => command(config, ['add', 'webhook', h.url]));
 	const issue = { __typename: 'Issue', number: 12, title: 'Pick a colour', url: 'https://github.com/acme/app/issues/12', comments: { nodes: [{ body: 'Blue or green?\n\nEither works.' }] } };
-	const runs = [{ workflowName: 'CI', status: 'completed', conclusion: 'failure', displayTitle: 'Add login', databaseId: 99, url: 'https://x/run/99' }];
+	const runs = [{ workflowName: 'CI', event: 'push', status: 'completed', conclusion: 'failure', displayTitle: 'Add login', databaseId: 99, url: 'https://x/run/99' }];
 	const gh = fakeGh({ search: { data: { l0: { nodes: [issue] }, l1: { nodes: [] } } }, runs });
 	try {
 		assert.equal(await check(config), 2);
@@ -164,6 +164,13 @@ test('observe round: checks and previews as events, with what a person may want 
 		assert.match(events[1].text, /ready at https:\/\/pr-5\.vercel\.app/);
 		assert.equal(events[2].notify.key, 'base-failed:7');
 		assert.deepEqual(await round(config, state, adapter), [], 'nothing repeats');
+		// Only a run of the workflow that makes requiredCheck holds merges, and only that one is notified.
+		gh.set({ prs: [pr('FAILURE')], deployments: deployments('https://pr-5.vercel.app'), runs: [
+			{ workflowName: 'Deploy POC', status: 'completed', conclusion: 'failure', displayTitle: 'y', databaseId: 9, event: 'workflow_dispatch', url: 'u' },
+			{ workflowName: 'Verify', status: 'completed', conclusion: 'failure', displayTitle: 'z', databaseId: 8, event: 'push', url: 'u' },
+		] });
+		const more = await round(config, state, adapter);
+		assert.deepEqual(more.map((e) => [e.text.replace(/ · .*/, ''), Boolean(e.notify)]), [['MAIN CI: Deploy POC failure', false], ['MAIN CI: Verify failure (holds merges)', true]]);
 	} finally {
 		gh.restore();
 	}

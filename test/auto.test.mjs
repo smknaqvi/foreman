@@ -36,6 +36,7 @@ test('checkChange: only listed files, only edited, every changed line matching i
 	assert.match(checkChange(RULE, { files: [file('constructor', ['+x'])] }), /doesn't cover/, 'no inherited keys');
 	assert.match(checkChange(RULE, { files: [file('Dockerfile', [], { modeChange: '100644 → 100755' })] }), /file mode of Dockerfile/);
 	assert.match(checkChange(RULE, { files: [file('Dockerfile', ['-FROM node:22.1-slim', '+FROM node:22.2-slim'], { mode: '120000' })] }), /isn't a regular file/);
+	assert.match(checkChange(RULE, { files: [file('Dockerfile', ['-Subproject commit 1', '+Subproject commit 2'], { mode: '160000' })] }), /Dockerfile is a submodule \(a gitlink\)/);
 });
 
 test('checkChange: patterns match the whole line, not part of it', () => {
@@ -50,14 +51,16 @@ test('parseDiff: changed lines come from hunks only, whatever they start with', 
 		'diff --git a/run.sh b/run.sh', 'old mode 100644', 'new mode 100755',
 		'diff --git a/logo.png b/logo.png', 'index 3333333..4444444 100644', 'Binary files a/logo.png and b/logo.png differ',
 		'diff --git a/new.txt b/new.txt', 'new file mode 100644', 'index 0000000..5555555', '--- /dev/null', '+++ b/new.txt', '@@ -0,0 +1 @@', '+hi',
+		'diff --git a/sub b/sub', 'index 1111111..2222222 160000', '--- a/sub', '+++ b/sub', '@@ -1 +1 @@', '-Subproject commit 1111111', '+Subproject commit 2222222',
 		'diff --git a/with space b/with space', 'deleted file mode 100644', 'index 6666666..0000000', '--- a/with space', '+++ /dev/null', '@@ -1 +0,0 @@', '-bye', '',
 	].join('\n');
 	assert.deepEqual(parseDiff(diff).files, [
 		{ path: 'versions.json', status: 'M', binary: false, modeChange: '', mode: '100644', lines: ['-  "left-pad": "1.2.0"', '+  "left-pad": "1.3.0"', '+++ evil', '--- gone'] },
 		{ path: 'run.sh', status: 'M', binary: false, modeChange: '100644 → 100755', mode: '', lines: [] },
 		{ path: 'logo.png', status: 'M', binary: true, modeChange: '', mode: '100644', lines: [] },
-		{ path: 'new.txt', status: 'A', binary: false, modeChange: '', mode: '', lines: ['+hi'] },
-		{ path: 'with space', status: 'D', binary: false, modeChange: '', mode: '', lines: ['-bye'] },
+		{ path: 'new.txt', status: 'A', binary: false, modeChange: '', mode: '100644', lines: ['+hi'] },
+		{ path: 'sub', status: 'M', binary: false, modeChange: '', mode: '160000', lines: ['-Subproject commit 1111111', '+Subproject commit 2222222'] },
+		{ path: 'with space', status: 'D', binary: false, modeChange: '', mode: '100644', lines: ['-bye'] },
 	]);
 });
 
@@ -117,7 +120,7 @@ const bin = temp('foreman-bin-');
 copyFileSync(join(ROOT, 'test/fake-gh.mjs'), join(bin, 'gh'));
 chmodSync(join(bin, 'gh'), 0o755);
 
-function repo({ branch = 'deps/2026-10-30', change = '  "left-pad": "1.3.0"\n', verify = 'success', chmod = false, runs = [], rules = [RULE], config = {}, gh = {}, author } = {}) {
+function repo({ branch = 'deps/2026-10-30', change = '  "left-pad": "1.3.0"\n', verify = 'success', chmod = false, runs = [], rules = [RULE], config = {}, gh = {}, author, prep = {} } = {}) {
 	const dir = temp('foreman-auto-');
 	const origin = join(dir, 'origin.git'), work = join(dir, 'work');
 	execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
@@ -126,12 +129,14 @@ function repo({ branch = 'deps/2026-10-30', change = '  "left-pad": "1.3.0"\n', 
 	const commit = (f, body, x = false) => {
 		writeFileSync(join(work, f), body);
 		if (x) chmodSync(join(work, f), 0o755);
-		git('add', '-A'); git('commit', '-q', '-m', f); return git('rev-parse', 'HEAD');
+		git('add', '--', f); git('commit', '-q', '-m', f); return git('rev-parse', 'HEAD');
 	};
 	git('symbolic-ref', 'HEAD', 'refs/heads/main');
+	prep.base?.(git);
 	commit('versions.json', '{\n  "left-pad": "1.2.0"\n}\n');
 	git('push', '-q', 'origin', 'main');
 	git('checkout', '-q', '-b', branch);
+	prep.branch?.(git);
 	const pr = commit('versions.json', `{\n${change}}\n`, chmod);
 	git('push', '-q', 'origin', branch, `${pr}:refs/pull/7/head`);
 	git('checkout', '-q', 'main');
@@ -202,15 +207,15 @@ test('auto-approve: every rule whose branch matches gets a try', async () => {
 });
 
 test("auto-approve --merge: approves but doesn't merge while the base branch's CI is red", async () => {
-	const t = repo({ runs: [{ workflowName: 'CI', status: 'completed', conclusion: 'failure', event: 'push' }] });
+	const t = repo({ runs: [{ workflowName: 'Verify', status: 'completed', conclusion: 'failure', event: 'push', databaseId: 1 }] });
 	const said = [];
 	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 0, said.join('\n'));
-	assert.match(said.join('\n'), /Not merging it yet: main's CI is failing \(CI\)\. The next run .* merges it once main is green/);
+	assert.match(said.join('\n'), /Not merging it yet: main's CI is failing \(Verify\)\. The next run .* merges it once main is green/);
 	assert.ok(t.state().approved.includes(t.pr));
 	assert.equal(t.state().merged, false);
 	assert.equal(t.branchOnOrigin(), t.pr, 'not rebased either');
 	// A hand-started run counts too: one that passed after the failed push means main is green again.
-	const u = repo({ runs: [{ workflowName: 'CI', status: 'completed', conclusion: 'success', event: 'workflow_dispatch' }, { workflowName: 'CI', status: 'completed', conclusion: 'failure', event: 'push' }] });
+	const u = repo({ runs: [{ workflowName: 'Verify', status: 'completed', conclusion: 'success', event: 'workflow_dispatch', databaseId: 2 }, { workflowName: 'Verify', status: 'completed', conclusion: 'failure', event: 'push', databaseId: 1 }] });
 	const heard = [];
 	assert.equal(await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) }), 0, heard.join('\n'));
 	assert.equal(u.state().merged, true, heard.join('\n'));
@@ -261,6 +266,56 @@ test('auto-approve --merge: a PR that would wait for its rebased head\'s own che
 	const w1 = [];
 	assert.equal(await autoApprove(w.config, { merge: true, log: (m) => w1.push(m) }), 0, w1.join('\n'));
 	assert.equal(w.state().merged, true, w1.join('\n'));
+});
+
+test('auto-approve: a submodule (gitlink) change is refused, even in a covered file', async () => {
+	const gitlink = (sha) => (git) => git('update-index', '--add', '--cacheinfo', `160000,${sha},sub`);
+	const t = repo({ rules: [{ ...RULE, files: { ...RULE.files, sub: '.*' } }], prep: { base: gitlink('1'.repeat(40)), branch: gitlink('2'.repeat(40)) } });
+	const said = [];
+	await autoApprove(t.config, { log: (m) => said.push(m) });
+	assert.match(said.join('\n'), /sub is a submodule \(a gitlink\), which is never auto-approved/);
+	assert.deepEqual(t.state().approved, []);
+});
+
+test('auto-approve --merge: a rebased head that then fails to merge is reported, its checks started, and the run fails', async () => {
+	const verifyRun = [{ workflowName: 'Verify', event: 'push', status: 'completed', conclusion: 'success', databaseId: 1 }];
+	const t = repo({ runs: verifyRun, gh: { mergeFails: true } });
+	const said = [];
+	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 1, said.join('\n'));
+	assert.notEqual(t.branchOnOrigin(), t.pr, 'it was rebased and pushed');
+	assert.match(said.join('\n'), /Rebased PR #7 but couldn't merge it: its new head has no checks; started Verify on it .* or run foreman tick\./);
+	assert.deepEqual(t.state().dispatched, ['Verify --ref deps/2026-10-30']);
+
+	const u = repo({ gh: { mergeFails: true, dispatchFails: false } }); // No run says which workflow makes verify.
+	const heard = [];
+	assert.equal(await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) }), 1);
+	assert.match(heard.join('\n'), /Couldn't start the checks on PR #7's new head: no workflow is known to make verify \(set baseWorkflows\)/);
+	assert.match(heard.join('\n'), /re-run verify on it or run foreman tick/);
+});
+
+test('auto-approve: a later run says the same of a head with no checks whose previous head it approved', async () => {
+	const before = (description) => [{ beforeCommit: { oid: 'a'.repeat(40), statusCheckRollup: { state: 'SUCCESS' }, status: { contexts: [{ context: 'coordinator-review', state: 'SUCCESS', description }] } } }];
+	const t = repo({ verify: '', gh: { forcePushes: before('Auto-approved: version pins') } });
+	const said = [];
+	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 1);
+	assert.match(said.join('\n'), /Rebased PR #7 but couldn't merge it: its new head has no checks; re-run verify on it or run foreman tick/);
+
+	const u = repo({ verify: '', gh: { forcePushes: before('Approved by the Coordinator') } }); // Someone else's approval: the usual reason.
+	const heard = [];
+	assert.equal(await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) }), 0);
+	assert.match(heard.join('\n'), /not auto-approved: verify hasn't passed/);
+});
+
+test('auto-approve --merge: tells the workflow which PRs it merged ($GITHUB_OUTPUT)', async () => {
+	const t = repo();
+	const output = join(temp('foreman-out-'), 'out');
+	process.env.GITHUB_OUTPUT = output;
+	try {
+		await autoApprove(t.config, { merge: true, log: () => {} });
+	} finally {
+		delete process.env.GITHUB_OUTPUT;
+	}
+	assert.equal(readFileSync(output, 'utf8'), 'merged=7\n');
 });
 
 test('auto-approve --dry-run changes nothing, and reads the change from GitHub', async () => {

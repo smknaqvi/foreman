@@ -268,8 +268,9 @@ function tickRepo(featureFile) {
 test('tick: rebases an approved PR onto the base and merges it through the gate', async () => {
 	const t = tickRepo('app.txt');
 	const said = [];
-	const ok = await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m));
-	assert.equal(ok, true, said.join('\n'));
+	const { merged, rebased } = await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m));
+	assert.equal(merged, true, said.join('\n'));
+	assert.equal(rebased, t.branch());
 	assert.notEqual(t.branch(), t.pr, 'the rebased branch was pushed');
 	assert.equal(t.state().merged, true);
 	assert.ok(t.state().approved.includes(t.branch()), 'the approval was carried over to the rebased commit');
@@ -278,7 +279,7 @@ test('tick: rebases an approved PR onto the base and merges it through the gate'
 test('tick: leaves a PR that does not rebase cleanly alone', async () => {
 	const t = tickRepo('other.txt'); // Main changed the same file.
 	const said = [];
-	assert.equal(await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m)), false);
+	assert.deepEqual(await rebaseAndMerge(t.config, t.prObj, (m) => said.push(m)), { merged: false, rebased: '' });
 	assert.match(said.join('\n'), /doesn't rebase cleanly/);
 	assert.equal(t.branch(), t.pr, 'the branch is untouched');
 	assert.equal(t.state().merged, false);
@@ -309,15 +310,18 @@ test('watchdog stop never signals a process that only shares the recorded pid', 
 	assert.match(out, /No Coordinator started by the watchdog is running/);
 });
 
-test('baseFailing: the newest push or hand-started run of each workflow counts; scheduled runs never do', async () => {
+test('baseRuns: the newest push or hand-started run of the workflow that makes requiredCheck; nothing else', async () => {
 	const { baseFailing, baseRuns } = await import('../lib/state.mjs');
-	const red = (runs) => baseFailing({ pushRuns: baseRuns(runs) }).map((r) => r.workflowName);
+	const config = { requiredCheck: 'verify', baseWorkflows: [] };
+	const red = (runs, c = config) => baseFailing(baseRuns(c, runs)).map((r) => r.workflowName);
 	const run = (workflowName, event, conclusion) => ({ workflowName, event, status: 'completed', conclusion });
 	// Newest first, as gh run list gives them.
-	assert.deepEqual(red([run('Deploy', 'schedule', 'success'), run('Deploy', 'push', 'failure')]), ['Deploy'], "a scheduled run doesn't hide a failure");
+	assert.deepEqual(red([run('Verify', 'schedule', 'success'), run('Verify', 'push', 'failure')]), ['Verify'], "a scheduled run doesn't hide a failure");
 	assert.deepEqual(red([run('Verify', 'workflow_dispatch', 'failure'), run('Verify', 'push', 'success')]), ['Verify'], 'a hand-started run (after a CI-token merge) counts');
 	assert.deepEqual(red([run('Verify', 'workflow_dispatch', 'success'), run('Verify', 'push', 'failure')]), [], 'and the newest one wins');
-	assert.deepEqual(red([run('Nightly', 'schedule', 'failure')]), []);
+	assert.deepEqual(red([run('Deploy POC', 'workflow_dispatch', 'failure'), run('Plugin updates', 'push', 'failure'), run('Verify', 'push', 'success')]), [], 'other workflows never hold merges');
+	assert.deepEqual(red([run('Deploy POC', 'push', 'failure'), run('Verify', 'push', 'success')], { ...config, baseWorkflows: ['Verify', 'Deploy POC'] }), ['Deploy POC'], 'baseWorkflows says which do');
+	assert.deepEqual(red([run('CI', 'push', 'failure'), run('CI', 'workflow_dispatch', 'failure'), run('Nightly', 'schedule', 'failure')]), ['CI'], 'no workflow named like the check: every push run, as before');
 });
 
 test('prepare: keeps an earlier Coordinator\'s leftovers on a branch, moves to the latest base, survives a deleted folder', async () => {

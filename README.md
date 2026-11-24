@@ -155,6 +155,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `env` | The environment adapter (or a list of them) and its options (next section) |
 | `observe` | `intervalSeconds`, `memoryHigh`, `memoryCritical` (%) |
 | `autoApprove` | Rules for PRs approved without a Coordinator (none by default). See [below](#approving-routine-updates-without-a-coordinator) |
+| `baseWorkflows` | The workflows that make `requiredCheck`: their newest push or hand-started run on the base decides whether it's red, which holds merges back (`tick`, `auto-approve`) and is what gets notified. Empty (the default): the workflow named like `requiredCheck`, ignoring case; if none is, every workflow's newest push run |
 | `watchdog` | `everyMinutes` (15), `staleMinutes` (0: act only after a usage-limit stop), `maxSessionsPerDay` (6), `dir` (the Coordinator's worktree), `setup`, `command`, `prompt`, `env`. See [When every agent stops](#when-every-agent-stops) |
 
 ## Extending
@@ -246,7 +247,7 @@ npx --no-install foreman notify                                # targets, and wh
 | Event | Default | When |
 |---|---|---|
 | `needs-people` | on | An open issue or PR has `labels.decision` or `labels.needsInput`. The notification includes its latest comment, which is usually what the Builder needs. Removing the label and adding it again sends again |
-| `base-failed` | on | A push run on the base branch failed |
+| `base-failed` | on | A run that holds merges back failed on the base branch (the newest push or hand-started run of a `baseWorkflows` workflow) |
 | `limit` | on | The newest agent session stopped at a usage limit with work in flight (with when it resets) |
 | `coordinator` | on | The watchdog started a Coordinator, or one ended (with its summary: what merged, what waits on whom) |
 | `held` | on | The watchdog won't start another Coordinator: the last ended with the same work in flight, or `maxSessionsPerDay` |
@@ -335,12 +336,12 @@ Some PRs are so narrow that a rule can check them as well as a review would: a b
 
 Every pattern must match the whole branch name or line, as if wrapped in `^(?:…)$`: a line that merely contains a version doesn't pass. A PR is approved only if all of this holds:
 - its branch matches, and it isn't from a fork or a draft;
-- the accounts that opened it, and authored and committed each of its commits, are in the rule's `authors` (by default only GitHub Actions' bot, `github-actions[bot]`; a bot can also be written the way `gh` shows it, `app/github-actions`). A commit someone else added, or a rebase someone pushed, leaves it for a person;
-- every file it changes is listed, and edited: not added, deleted, binary or changed in mode;
+- the accounts that opened it, and authored and committed each of its commits, are in the rule's `authors` (by default only GitHub Actions' bot, `github-actions[bot]`; a bot can also be written the way `gh` shows it, `app/github-actions`). A commit someone else added, or a rebase someone pushed, leaves it for a person. This is a tripwire, not proof: a commit's author and committer come from names and emails anyone can set (see [Limits](#limits));
+- every file it changes is listed, and edited: not added, deleted, binary, changed in mode or a submodule;
 - every line it adds or removes matches that file's pattern. With `versionsOnly`, each line also differs from the line it replaces only in its versions (dotted numbers, so 6.18.3 → 6.18.4.1 counts), so a name can't be swapped, and each version that changed goes up: a rollback is left for a person;
-- every check on its head commit is green: the newest run of each check (a re-run still going counts as pending) and every commit status, with `requiredCheck`, if set, among them.
+- every check on its head commit is green: the newest run of each check (by app and name; a re-run still going counts as pending) and every commit status, with `requiredCheck`, if set, among them. `tick` uses the same rule (`commitGreen` in `lib/state.mjs`), and `foreman merge` checks again when it merges.
 
-When several rules match the branch, any one that accepts the PR is enough. Anything else is left open, with the reason printed. An approval already on the head isn't posted again. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind), and like `tick` merges nothing while the base branch's CI is red (the newest push or hand-started run of some workflow failed): the PR stays approved, and the next run merges it once the base is green. `--dry-run` reads everything from GitHub's API (its compare view of the PR, which doesn't show every mode change) and changes nothing, locally or on GitHub. Keep the patterns tight: they are the review.
+When several rules match the branch, any one that accepts the PR is enough. Anything else is left open, with the reason printed. An approval already on the head isn't posted again. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind), and like `tick` merges nothing while the base branch's CI is red (the newest push or hand-started run of a workflow in `baseWorkflows` failed; by default the workflow named like `requiredCheck`, e.g. "Verify"): the PR stays approved, and the next run merges it once the base is green. `observe` and notifications report that same failure as holding merges. `--dry-run` reads everything from GitHub's API (its compare view of the PR, which doesn't show every mode change) and changes nothing, locally or on GitHub. Keep the patterns tight: they are the review.
 
 Run it from CI once the PR's check finishes, and on a schedule so a PR held back by a red base merges once it's green: a workflow checking out the base branch (never the PR's code):
 
@@ -348,7 +349,7 @@ Run it from CI once the PR's check finishes, and on a schedule so a PR held back
 name: Auto-approve
 on:
   workflow_run:
-    workflows: [verify]          # The workflow that runs requiredCheck.
+    workflows: [Verify]          # The workflow that makes requiredCheck.
     types: [completed]
   schedule:
     - cron: "17 * * * *"         # Hourly: merges what waited for a red base branch.
@@ -357,26 +358,31 @@ permissions:
   contents: write       # Push a rebased head.
   pull-requests: write  # Merge.
   statuses: write       # The approval.
-  checks: read
-  actions: write        # Only to start the base branch's checks after merging (below).
+  checks: read          # Read the head's checks.
+  actions: write        # Start Verify by hand: on a rebased head that didn't merge, and on main after a merge.
 jobs:
   auto-approve:
     if: github.event_name == 'schedule' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'plugin-updates/'))
     runs-on: ubuntu-latest
+    env: { GH_TOKEN: "${{ github.token }}" }
     steps:
       - uses: actions/checkout@v4
         with: { ref: main, fetch-depth: 0 }  # Full history: the diff needs the PR's merge base.
       - run: npm ci
-      - run: |                     # Who a rebase is committed as.
+      - run: |                     # Who a rebase is committed as (and so who auto-approve sees on it).
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      - run: npx --no-install foreman auto-approve --merge
-        env: { GH_TOKEN: "${{ github.token }}" }
+      - id: auto
+        run: npx --no-install foreman auto-approve --merge
+      # A merge made with this token starts no push runs on main: start its checks by hand.
+      - if: always() && steps.auto.outputs.merged != ''
+        run: gh workflow run verify.yml --ref main
 ```
 
-(With a shallow checkout, `auto-approve` fetches the full history itself first.) Two things a workflow's `GITHUB_TOKEN` doesn't do, by GitHub's design: a push made with it starts no checks, and neither does a merge. So:
+The check's workflow needs `workflow_dispatch:` among its triggers for both hand-started runs. (With a shallow checkout, `auto-approve` fetches the full history itself first.) What a workflow's `GITHUB_TOKEN` doesn't do, by GitHub's design: a push made with it starts no workflows, and neither does a merge. So:
 - When a PR is behind, `--merge` rebases it and reuses the checks its approved commit passed. If it couldn't (`foreman merge` would wait for the rebased head's own checks: no `requiredCheck`, or a `staleCheckPaths` path changed on the base since, unless the change is docs only), those checks would never start: `auto-approve` leaves such a PR as it is and says it needs its checks re-run on the rebased head, for a person or agent to push or re-run.
-- If a deploy follows the base branch's checks, have the job start them after merging (`gh workflow run <check>.yml --ref main`). Those hand-started runs count when `tick` and `auto-approve` ask whether the base is red.
+- If it rebased and pushed a PR but then couldn't merge it, the new head has no checks: it starts the `baseWorkflows` on the PR's branch (`gh workflow run`, so the next run can approve and merge the new head), says so, and exits non-zero. Each later run says the same of such a PR (a head with no checks whose previous head it approved) until its checks run or `foreman tick` merges it. If it can't start them, it says why: re-run the check on it, or run `foreman tick`.
+- After a merge, the base branch's push workflows don't run: the last step above starts its check. **Deploys that follow a push to the base won't run either**: start the deploy in that step too, or have it run on `workflow_run` of the check (which a hand-started run also fires). `auto-approve` writes `merged=<PR numbers>` to `$GITHUB_OUTPUT` for such steps. Those hand-started runs count when `tick` and `auto-approve` ask whether the base is red.
 
 ## Running the checks on your own machine
 
@@ -399,6 +405,7 @@ While the runner is offline, runs wait as **queued** and start when it's back: t
 - **The hook refuses `gh` and `git push` whenever it can't trust the guard:** when foreman isn't installed, when the installed version isn't the one `package-lock.json` pins (run `npm install` after a rebase that bumped it), or when the guard fails to load.
 - **The command guard needs the tool's hooks.** Claude Code, Codex, Cursor, Antigravity and Gemini CLI get it (`init --agents`). A tool without hooks gets the git pre-push check and the commands, but nothing stops it typing `gh pr merge`. The hook finds the shim from the checkout's root (Claude Code's `$CLAUDE_PROJECT_DIR`, Gemini CLI's `$GEMINI_PROJECT_DIR`, otherwise `git rev-parse --show-toplevel` from the session's folder, or Cursor's project root): a session started outside the checkout, or inside a submodule, may not find it. Each tool's hooks have their own gaps: Codex says some specialized tool paths skip them, and Cursor and Gemini CLI let a command run if a hook crashes (so does foreman's: a bug in the guard mustn't stall every command).
 - **The watchdog reads Claude Code's transcripts** (`~/.claude/projects/`) to tell a usage-limit stop from agents that are just waiting; with other tools it can only go by `staleMinutes`. They're Claude Code's own files, not an API: if their shape changes it stops seeing limits (set `staleMinutes` as a fallback). It starts Claude with `--permission-mode bypassPermissions` (`watchdog.command`), because nobody is there to approve tools; the merge guard hook still applies.
+- **`autoApprove`'s `authors` is a tripwire, not proof of who pushed.** A commit's author and committer are a name and email set by whoever made it, and GitHub only maps the email to an account, so anyone who can push to the branch can make commits that look like the bot's. The check catches accidents (a person's fix pushed onto a bot's branch), not forgery. Where GitHub offers it, restrict who can push to the bot's branches (a ruleset or branch protection on `plugin-updates/*`, say), so the branch pattern itself means "made by the bot".
 - **GitHub only.**
 
 ## Upgrading

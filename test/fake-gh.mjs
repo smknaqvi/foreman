@@ -5,7 +5,9 @@
  *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], verify: { sha: conclusion },
  *     failed: { sha: "names" }, checksPass, merged, origin?, runs? (gh run list on the base),
  *     checks?: { sha: [check run] } (instead of the ones verify and failed imply), statuses?: { sha: [status] },
- *     prCommits? (the PR's commits; default: one by GitHub Actions' bot at its head), pr.author? }
+ *     prCommits? (the PR's commits; default: one by GitHub Actions' bot at its head), pr.author?,
+ *     forcePushes? (GraphQL force-push timeline), dispatched (gh workflow run calls, recorded), dispatchFails?,
+ *     mergeFails? (gh pr merge refuses) }
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -25,6 +27,12 @@ const jq = args.includes('--jq');
 if (a === 'repo' && b === 'view') out(jq ? s.repo : JSON.stringify({ nameWithOwner: s.repo }));
 else if (a === 'pr' && b === 'list') out(JSON.stringify([{ number: s.pr.number ?? 7, headRefName: s.pr.branch, headRefOid: s.pr.head, isCrossRepository: false, isDraft: s.pr.isDraft, baseRefName: 'main', author: s.pr.author ?? { login: 'app/github-actions', is_bot: true } }]));
 else if (a === 'run' && b === 'list') out(JSON.stringify(s.runs ?? []));
+else if (a === 'api' && b === 'graphql') {
+	// Force-push timelines (approvals before a rebase): s.forcePushes, [{ beforeCommit: { oid, status: { contexts } } }].
+	const q = args.find((x) => x.startsWith('query=')) ?? '';
+	const repository = Object.fromEntries([...q.matchAll(/p(\d+):pullRequest/g)].map(([, n]) => [`p${n}`, { timelineItems: { nodes: s.forcePushes ?? [] } }]));
+	out(JSON.stringify({ data: { repository } }));
+} else if (a === 'workflow' && b === 'run') { (s.dispatched ??= []).push(args.slice(2).join(' ')); save(); if (s.dispatchFails) process.exit(1); }
 else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
 	let m;
@@ -69,7 +77,7 @@ else if (a === 'api') {
 } else if (a === 'pr' && b === 'checks') process.exit(s.checksPass ? 0 : 1);
 else if (a === 'pr' && b === 'merge') {
 	const head = args[args.indexOf('--match-head-commit') + 1];
-	if (head !== s.pr.head) process.exit(1);
+	if (head !== s.pr.head || s.mergeFails) process.exit(1);
 	s.merged = true;
 	save();
 } else {
