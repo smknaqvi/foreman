@@ -43,7 +43,7 @@ async function hook() {
 	return h;
 }
 
-/** gh answering from a JSON file: { graphql, runs, prs } (the parts these tests need). */
+/** gh answering from a JSON file: { graphql, runs, prs, workflows } (the parts these tests need). */
 function fakeGh(answers) {
 	const bin = temp('foreman-gh-');
 	writeFileSync(join(bin, 'answers.json'), JSON.stringify(answers));
@@ -53,6 +53,7 @@ const args = process.argv.slice(2);
 const q = args.find((x) => x.startsWith('query=')) ?? '';
 if (args[0] === 'api' && args[1] === 'graphql') console.log(JSON.stringify(q.includes('search(') ? a.search : a.deployments));
 else if (args[0] === 'run') console.log(JSON.stringify(a.runs ?? []));
+else if (args[0] === 'workflow') console.log(JSON.stringify(a.workflows ?? []));
 else if (args[0] === 'pr') console.log(JSON.stringify(a.prs ?? []));
 else if (args[0] === 'repo') console.log(JSON.stringify({ owner: { login: 'acme' }, name: 'app' }));
 else { console.error('fake gh: ' + args.join(' ')); process.exit(2); }
@@ -165,8 +166,8 @@ test('observe round: checks and previews as events, with what a person may want 
 		assert.equal(events[2].notify.key, 'base-failed:7');
 		assert.deepEqual(await round(config, state, adapter), [], 'nothing repeats');
 		// Only a run of the workflow that makes requiredCheck holds merges, and only that one is notified.
-		gh.set({ prs: [pr('FAILURE')], deployments: deployments('https://pr-5.vercel.app'), runs: [
-			{ workflowName: 'Deploy POC', status: 'completed', conclusion: 'failure', displayTitle: 'y', databaseId: 9, event: 'workflow_dispatch', url: 'u' },
+		gh.set({ prs: [pr('FAILURE')], deployments: deployments('https://pr-5.vercel.app'), workflows: [{ name: 'Verify' }, { name: 'Deploy POC' }], runs: [
+			{ workflowName: 'Deploy POC', status: 'completed', conclusion: 'failure', displayTitle: 'y', databaseId: 9, event: 'push', url: 'u' },
 			{ workflowName: 'Verify', status: 'completed', conclusion: 'failure', displayTitle: 'z', databaseId: 8, event: 'push', url: 'u' },
 		] });
 		const more = await round(config, state, adapter);

@@ -7,7 +7,8 @@
  *     checks?: { sha: [check run] } (instead of the ones verify and failed imply), statuses?: { sha: [status] },
  *     prCommits? (the PR's commits; default: one by GitHub Actions' bot at its head), pr.author?,
  *     forcePushes? (GraphQL force-push timeline), dispatched (gh workflow run calls, recorded), dispatchFails?,
- *     mergeFails? (gh pr merge refuses) }
+ *     mergeFails? (gh pr merge refuses), workflows? (gh workflow list), workflowRuns? (the head's workflow runs),
+ *     apiCalls (REST reads, recorded) }
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -32,9 +33,11 @@ else if (a === 'api' && b === 'graphql') {
 	const q = args.find((x) => x.startsWith('query=')) ?? '';
 	const repository = Object.fromEntries([...q.matchAll(/p(\d+):pullRequest/g)].map(([, n]) => [`p${n}`, { timelineItems: { nodes: s.forcePushes ?? [] } }]));
 	out(JSON.stringify({ data: { repository } }));
-} else if (a === 'workflow' && b === 'run') { (s.dispatched ??= []).push(args.slice(2).join(' ')); save(); if (s.dispatchFails) process.exit(1); }
+} else if (a === 'workflow' && b === 'list') out(JSON.stringify(s.workflows ?? []));
+else if (a === 'workflow' && b === 'run') { (s.dispatched ??= []).push(args.slice(2).join(' ')); save(); if (s.dispatchFails) process.exit(1); }
 else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
+	if (ep && !ep.includes('/statuses/')) { (s.apiCalls ??= []).push(ep); save(); }
 	let m;
 	if ((m = ep.match(/commits\/(\w+)\/statuses$/))) out(s.approved.includes(m[1]) ? 'success' : '');
 	else if ((m = ep.match(/\/statuses\/(\w+)$/))) { s.approved.push(m[1]); save(); }
@@ -45,7 +48,8 @@ else if (a === 'api') {
 			...(s.failed[m[1]] ? s.failed[m[1]].split(', ').map((name, i) => ({ id: 100 + i, name, status: 'completed', conclusion: 'failure' })) : []),
 		];
 		out(JSON.stringify({ total_count: runs.length, check_runs: runs }));
-	} else if ((m = ep.match(/commits\/(\w+)\/status$/))) {
+	} else if (ep.endsWith('/actions/runs')) out(JSON.stringify({ workflow_runs: s.workflowRuns ?? [] })); // By head_sha: which workflow each check suite is.
+	else if ((m = ep.match(/commits\/(\w+)\/status$/))) {
 		const approval = s.approved.includes(m[1]) ? [{ context: 'coordinator-review', state: 'success' }] : [];
 		out(JSON.stringify({ statuses: [...(s.statuses?.[m[1]] ?? []), ...approval] }));
 	} else if ((m = ep.match(/pulls\/(\d+)\/commits$/))) {

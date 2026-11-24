@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { autoApprove, checkAuthors, checkChange, compareVersions, parseDiff } from '../lib/auto.mjs';
 import { DEFAULTS, loadConfig } from '../lib/config.mjs';
+import { commitGreen, readCrew, rollupChecks } from '../lib/state.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const temps = [];
@@ -74,6 +75,15 @@ test('checkChange with versionsOnly: a line may only change its versions, and on
 	assert.match(bump('1.3.0', '1.2.9'), /goes from 1\.3\.0 to 1\.2\.9, which isn't an upgrade/, 'a rollback');
 	assert.match(bump('7.2.1', '7.2'), /isn't an upgrade/);
 	assert.match(bump('7.2', '7.2.0'), /isn't an upgrade/, 'the same version written differently');
+	// Only numbers that stand on their own are versions: one glued to letters is part of a name.
+	const line = (from, to) => checkChange({ ...strict, files: { f: '.*' } }, { files: [file('f', [`-${from}`, `+${to}`])] });
+	assert.match(line('requires: php7-compat', 'requires: php8-compat'), /more than version numbers/, 'php7 → php8 is a name');
+	assert.match(line('image: wordpress:7.1.5-php8.3-apache', 'image: wordpress:7.1.5-php8.4-apache'), /more than version numbers/);
+	assert.equal(line('image: wordpress:7.1.4-php8.3-apache', 'image: wordpress:7.1.5-php8.3-apache'), '');
+	assert.equal(line('"core": "https://wordpress.org/wordpress-7.1.4.zip",', '"core": "https://wordpress.org/wordpress-7.1.5.zip",'), '');
+	assert.equal(line('"https://downloads.wordpress.org/plugin/the-events-calendar.6.18.3.zip",', '"https://downloads.wordpress.org/plugin/the-events-calendar.6.18.4.1.zip",'), '');
+	assert.equal(line('uses: actions/checkout@v4', 'uses: actions/checkout@v5'), '', 'a lone v');
+	assert.match(line('ubuntu 22.04abc', 'ubuntu 22.05abc'), /more than version numbers/, "a run isn't cut short to fit");
 	// Two versions on one line: each that changed must go up.
 	const two = (to) => checkChange({ ...strict, files: { 'a.txt': '.*' } }, { files: [file('a.txt', ['-core 7.1 plugin 6.18', `+core ${to}`])] });
 	assert.equal(two('7.2 plugin 6.18'), '');
@@ -81,6 +91,16 @@ test('checkChange with versionsOnly: a line may only change its versions, and on
 	assert.match(checkChange(strict, { files: [file('versions.json', ['-  "left-pad": "1.2.0",', '+  "evil-pad": "1.2.1",'])] }), /more than version numbers/, 'a swapped name');
 	assert.match(checkChange(strict, { files: [file('versions.json', ['+  "extra": "1.0.0",'])] }), /more than version numbers/, 'a line only added');
 	assert.equal(checkChange(RULE, { files: [file('versions.json', ['-  "left-pad": "1.2.0",', '+  "evil-pad": "1.2.1",'])] }), '', 'without it, the line pattern alone decides');
+});
+
+test('commitGreen: the newest run of each check; any run not finished makes it pending', () => {
+	const c = { requiredCheck: 'verify', approvalContext: 'coordinator-review' };
+	const run = (workflowName, status, conclusion, startedAt) => ({ __typename: 'CheckRun', name: 'verify', workflowName, status, conclusion, startedAt });
+	const green = (rollup) => commitGreen(c, rollupChecks(rollup)).problem;
+	assert.equal(green([run('Verify', 'COMPLETED', 'FAILURE', '2026-11-24T10:00:00Z'), run('Verify', 'COMPLETED', 'SUCCESS', '2026-11-24T11:00:00Z')]), '', 'a re-run that passed');
+	assert.match(green([run('Verify', 'COMPLETED', 'SUCCESS', '2026-11-24T11:00:00Z'), run('Verify', 'QUEUED', '', null)]), /still running: verify/, 'a queued re-run, with no start time');
+	assert.match(green([run('Verify', 'COMPLETED', 'SUCCESS', '2026-11-24T11:00:00Z'), run('Verify', 'QUEUED', '', '0001-01-01T00:00:00Z')]), /still running/);
+	assert.match(green([run('Verify', 'COMPLETED', 'SUCCESS', '2026-11-24T11:00:00Z'), run('Nightly', 'COMPLETED', 'FAILURE', '2026-11-24T09:00:00Z')]), /checks failed: verify/, 'a same-named job in another workflow is its own check');
 });
 
 test('compareVersions: part by part, a missing part counting as 0', () => {
@@ -207,15 +227,17 @@ test('auto-approve: every rule whose branch matches gets a try', async () => {
 });
 
 test("auto-approve --merge: approves but doesn't merge while the base branch's CI is red", async () => {
-	const t = repo({ runs: [{ workflowName: 'Verify', status: 'completed', conclusion: 'failure', event: 'push', databaseId: 1 }] });
+	const VERIFY = { workflows: [{ name: 'Verify', path: '.github/workflows/verify.yml' }] };
+	const t = repo({ gh: VERIFY, runs: [{ workflowName: 'Verify', status: 'completed', conclusion: 'failure', event: 'push', databaseId: 1 }] });
 	const said = [];
 	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 0, said.join('\n'));
+	assert.match(said.join('\n'), /Merges wait on main's Verify \(the workflow named like verify\)\./);
 	assert.match(said.join('\n'), /Not merging it yet: main's CI is failing \(Verify\)\. The next run .* merges it once main is green/);
 	assert.ok(t.state().approved.includes(t.pr));
 	assert.equal(t.state().merged, false);
 	assert.equal(t.branchOnOrigin(), t.pr, 'not rebased either');
 	// A hand-started run counts too: one that passed after the failed push means main is green again.
-	const u = repo({ runs: [{ workflowName: 'Verify', status: 'completed', conclusion: 'success', event: 'workflow_dispatch', databaseId: 2 }, { workflowName: 'Verify', status: 'completed', conclusion: 'failure', event: 'push', databaseId: 1 }] });
+	const u = repo({ gh: VERIFY, runs: [{ workflowName: 'Verify', status: 'completed', conclusion: 'success', event: 'workflow_dispatch', databaseId: 2 }, { workflowName: 'Verify', status: 'completed', conclusion: 'failure', event: 'push', databaseId: 1 }] });
 	const heard = [];
 	assert.equal(await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) }), 0, heard.join('\n'));
 	assert.equal(u.state().merged, true, heard.join('\n'));
@@ -278,18 +300,17 @@ test('auto-approve: a submodule (gitlink) change is refused, even in a covered f
 });
 
 test('auto-approve --merge: a rebased head that then fails to merge is reported, its checks started, and the run fails', async () => {
-	const verifyRun = [{ workflowName: 'Verify', event: 'push', status: 'completed', conclusion: 'success', databaseId: 1 }];
-	const t = repo({ runs: verifyRun, gh: { mergeFails: true } });
+	const t = repo({ gh: { mergeFails: true, workflows: [{ name: 'Verify', path: '.github/workflows/verify.yml' }] } });
 	const said = [];
 	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 1, said.join('\n'));
 	assert.notEqual(t.branchOnOrigin(), t.pr, 'it was rebased and pushed');
 	assert.match(said.join('\n'), /Rebased PR #7 but couldn't merge it: its new head has no checks; started Verify on it .* or run foreman tick\./);
 	assert.deepEqual(t.state().dispatched, ['Verify --ref deps/2026-10-30']);
 
-	const u = repo({ gh: { mergeFails: true, dispatchFails: false } }); // No run says which workflow makes verify.
+	const u = repo({ gh: { mergeFails: true } }); // No workflow named like verify.
 	const heard = [];
 	assert.equal(await autoApprove(u.config, { merge: true, log: (m) => heard.push(m) }), 1);
-	assert.match(heard.join('\n'), /Couldn't start the checks on PR #7's new head: no workflow is known to make verify \(set baseWorkflows\)/);
+	assert.match(heard.join('\n'), /Couldn't start the checks on PR #7's new head: no workflow is named like verify \(set baseWorkflows\)/);
 	assert.match(heard.join('\n'), /re-run verify on it or run foreman tick/);
 });
 
@@ -298,7 +319,15 @@ test('auto-approve: a later run says the same of a head with no checks whose pre
 	const t = repo({ verify: '', gh: { forcePushes: before('Auto-approved: version pins') } });
 	const said = [];
 	assert.equal(await autoApprove(t.config, { merge: true, log: (m) => said.push(m) }), 1);
+	assert.match(said.join('\n'), /Couldn't start the checks on PR #7's new head: no workflow is named like verify/);
 	assert.match(said.join('\n'), /Rebased PR #7 but couldn't merge it: its new head has no checks; re-run verify on it or run foreman tick/);
+
+	// Each later run tries starting them again (once), then says so.
+	const r = repo({ verify: '', gh: { forcePushes: before('Auto-approved: version pins'), workflows: [{ name: 'Verify' }] } });
+	const r1 = [];
+	assert.equal(await autoApprove(r.config, { merge: true, log: (m) => r1.push(m) }), 1);
+	assert.match(r1.join('\n'), /its new head has no checks; started Verify on it/);
+	assert.deepEqual(r.state().dispatched, ['Verify --ref deps/2026-10-30']);
 
 	const u = repo({ verify: '', gh: { forcePushes: before('Approved by the Coordinator') } }); // Someone else's approval: the usual reason.
 	const heard = [];
@@ -316,6 +345,65 @@ test('auto-approve --merge: tells the workflow which PRs it merged ($GITHUB_OUTP
 		delete process.env.GITHUB_OUTPUT;
 	}
 	assert.equal(readFileSync(output, 'utf8'), 'merged=7\n');
+});
+
+test('auto-approve: same-named jobs in two workflows are two checks; a queued re-run is pending (REST)', async () => {
+	const t = repo({ gh: (sha) => ({
+		checks: { [sha]: [
+			{ id: 1, name: 'verify', status: 'completed', conclusion: 'failure', check_suite: { id: 20 } },
+			{ id: 2, name: 'verify', status: 'completed', conclusion: 'success', check_suite: { id: 10 } },
+		] },
+		workflowRuns: [{ check_suite_id: 10, name: 'Verify' }, { check_suite_id: 20, name: 'Nightly' }],
+	}) });
+	const said = [];
+	await autoApprove(t.config, { log: (m) => said.push(m) });
+	assert.match(said.join('\n'), /checks failed on \w+: verify/);
+	assert.deepEqual(t.state().approved, []);
+
+	const u = repo({ gh: (sha) => ({ checks: { [sha]: [
+		{ id: 5, name: 'verify', status: 'completed', conclusion: 'success', check_suite: { id: 10 } },
+		{ id: 3, name: 'verify', status: 'queued', conclusion: null, check_suite: { id: 10 } },
+	] }, workflowRuns: [{ check_suite_id: 10, name: 'Verify' }] }) });
+	const heard = [];
+	await autoApprove(u.config, { log: (m) => heard.push(m) });
+	assert.match(heard.join('\n'), /still running on \w+: verify/);
+});
+
+test("auto-approve: a PR opened by someone the rules don't trust costs no API calls", async () => {
+	const t = repo({ author: { login: 'mallory' } });
+	const said = [];
+	await autoApprove(t.config, { log: (m) => said.push(m) });
+	assert.match(said.join('\n'), /opened by mallory/);
+	assert.deepEqual(t.state().apiCalls ?? [], []);
+});
+
+test('readCrew: tick is ready by the same rule (commitGreen), not by every run ever', async () => {
+	const dir = temp('foreman-crew-');
+	const rollup = (extra) => [{ __typename: 'StatusContext', context: 'coordinator-review', state: 'SUCCESS' },
+		{ __typename: 'CheckRun', name: 'verify', workflowName: 'Verify', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: '2026-11-24T10:00:00Z' },
+		{ __typename: 'CheckRun', name: 'verify', workflowName: 'Verify', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: '2026-11-24T11:00:00Z' }, ...extra];
+	const prs = [
+		{ number: 1, headRefOid: 'a'.repeat(40), mergeable: 'MERGEABLE', isDraft: false, statusCheckRollup: rollup([]) },
+		{ number: 2, headRefOid: 'b'.repeat(40), mergeable: 'MERGEABLE', isDraft: false, statusCheckRollup: rollup([{ __typename: 'CheckRun', name: 'verify', workflowName: 'Verify', status: 'QUEUED', conclusion: '', startedAt: null }]) },
+	];
+	writeFileSync(join(dir, 'gh'), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const out = (x) => console.log(JSON.stringify(x));
+if (args[0] === 'repo') out({ owner: { login: 'o' }, name: 'r' });
+else if (args[0] === 'pr') out(args.includes('merged') ? [] : ${JSON.stringify(prs)});
+else if (args[0] === 'workflow') out([{ name: 'Verify' }]);
+else out([]);
+`);
+	chmodSync(join(dir, 'gh'), 0o755);
+	const path = process.env.PATH;
+	process.env.PATH = `${dir}:${path}`;
+	try {
+		const crew = await readCrew({ ...DEFAULTS, root: dir });
+		assert.deepEqual(crew.prs.map((p) => [p.number, p.foreman.ready, p.foreman.failed, p.foreman.running]), [[1, true, [], []], [2, false, [], ['verify']]]);
+		assert.match(crew.baseWorkflows.why, /^Verify/);
+	} finally {
+		process.env.PATH = path;
+	}
 });
 
 test('auto-approve --dry-run changes nothing, and reads the change from GitHub', async () => {

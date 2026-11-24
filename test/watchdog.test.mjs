@@ -311,17 +311,23 @@ test('watchdog stop never signals a process that only shares the recorded pid', 
 });
 
 test('baseRuns: the newest push or hand-started run of the workflow that makes requiredCheck; nothing else', async () => {
-	const { baseFailing, baseRuns } = await import('../lib/state.mjs');
+	const { baseFailing, baseRuns, baseWorkflows } = await import('../lib/state.mjs');
 	const config = { requiredCheck: 'verify', baseWorkflows: [] };
-	const red = (runs, c = config) => baseFailing(baseRuns(c, runs)).map((r) => r.workflowName);
+	const workflows = [{ name: 'Verify' }, { name: 'Deploy POC' }, { name: 'Plugin updates' }];
+	const red = (runs, c = config, w = workflows) => baseFailing(baseRuns(c, runs, baseWorkflows(c, w))).map((r) => r.workflowName);
 	const run = (workflowName, event, conclusion) => ({ workflowName, event, status: 'completed', conclusion });
 	// Newest first, as gh run list gives them.
 	assert.deepEqual(red([run('Verify', 'schedule', 'success'), run('Verify', 'push', 'failure')]), ['Verify'], "a scheduled run doesn't hide a failure");
 	assert.deepEqual(red([run('Verify', 'workflow_dispatch', 'failure'), run('Verify', 'push', 'success')]), ['Verify'], 'a hand-started run (after a CI-token merge) counts');
 	assert.deepEqual(red([run('Verify', 'workflow_dispatch', 'success'), run('Verify', 'push', 'failure')]), [], 'and the newest one wins');
 	assert.deepEqual(red([run('Deploy POC', 'workflow_dispatch', 'failure'), run('Plugin updates', 'push', 'failure'), run('Verify', 'push', 'success')]), [], 'other workflows never hold merges');
+	assert.deepEqual(red([run('Verify', 'push', 'failure')], config, [{ name: 'Verify' }]), ['Verify'], "found in the repo's workflow list, not its recent runs");
 	assert.deepEqual(red([run('Deploy POC', 'push', 'failure'), run('Verify', 'push', 'success')], { ...config, baseWorkflows: ['Verify', 'Deploy POC'] }), ['Deploy POC'], 'baseWorkflows says which do');
-	assert.deepEqual(red([run('CI', 'push', 'failure'), run('CI', 'workflow_dispatch', 'failure'), run('Nightly', 'schedule', 'failure')]), ['CI'], 'no workflow named like the check: every push run, as before');
+	const ci = [{ name: 'CI' }, { name: 'Nightly' }];
+	assert.deepEqual(red([run('CI', 'push', 'failure'), run('CI', 'workflow_dispatch', 'failure'), run('Nightly', 'schedule', 'failure')], config, ci), ['CI'], 'no workflow named like the check: every push run, as before');
+	assert.match(baseWorkflows(config, ci).why, /every workflow's push runs \(none is named like verify/);
+	assert.match(baseWorkflows(config, workflows).why, /^Verify \(the workflow named like verify\)$/);
+	assert.equal(baseWorkflows(config, null).all, true, "an unreadable workflow list falls back too");
 });
 
 test('prepare: keeps an earlier Coordinator\'s leftovers on a branch, moves to the latest base, survives a deleted folder', async () => {
