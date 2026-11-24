@@ -2,7 +2,7 @@
  * Config loading, `foreman init` and `foreman workspace`, and the environment adapters' setup.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -211,4 +211,24 @@ test('guard --self-test fails when a tool the repo is set up for lost its hook, 
 	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
 	writeFileSync(join(dir, '.claude/settings.json'), '{}');
 	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}every tool set up here runs it \(missing: \.claude\/settings\.json\)/.test(e.stdout));
+});
+
+test('init --agents antigravity: its hooks.json, and links to every playbook in .agents/skills/', () => {
+	const dir = repo();
+	mkdirSync(join(dir, '.claude/skills/local-site'), { recursive: true });
+	writeFileSync(join(dir, '.claude/skills/local-site/SKILL.md'), '---\nname: local-site\ndescription: x\n---\n');
+	mkdirSync(join(dir, '.agents/skills/ours'), { recursive: true }); // A skill of the repo's own there: left alone.
+	cli(dir, 'init', '--agents', 'claude,antigravity');
+	const hooks = JSON.parse(readFileSync(join(dir, '.agents/hooks.json'), 'utf8'));
+	assert.equal(hooks['foreman-guard'].PreToolUse[0].matcher, 'run_command');
+	assert.match(hooks['foreman-guard'].PreToolUse[0].hooks[0].command, /--agent antigravity$/);
+	for (const skill of ['coordinate-agents', 'work-an-issue', 'local-site']) {
+		assert.ok(lstatSync(join(dir, '.agents/skills', skill)).isSymbolicLink(), skill);
+		assert.ok(existsSync(join(dir, '.agents/skills', skill, 'SKILL.md')), `${skill} resolves`);
+	}
+	cli(dir, 'init', '--agents', 'claude,antigravity');
+	assert.equal(JSON.parse(readFileSync(join(dir, '.agents/hooks.json'), 'utf8'))['foreman-guard'].PreToolUse.length, 1, 'added once');
+	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
+	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
+	assert.match(cli(dir, 'guard', '--self-test'), /Antigravity: blocks gh pr merge/);
 });

@@ -24,7 +24,7 @@ const root = (agent === 'claude' && process.env.CLAUDE_PROJECT_DIR) || own;
 let raw = '';
 try { raw = readFileSync(0, 'utf8'); } catch {}
 let command = '';
-try { const p = JSON.parse(raw || '{}'); command = [p.tool_input?.command ?? p.command ?? ''].flat().join(' '); } catch {}
+try { const p = JSON.parse(raw || '{}'); command = [p.tool_input?.command ?? p.toolCall?.args?.CommandLine ?? p.command ?? ''].flat().join(' '); } catch {}
 const guarded = /\bgh\b|\bgit\b[^\n;&|]*\bpush\b/.test(command);
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 
@@ -54,7 +54,10 @@ try {
 const answers = {
 	cursor: (r) => ({ continue: true, permission: 'deny', user_message: r, agent_message: r }),
 	gemini: (r) => ({ decision: 'deny', reason: r }),
+	antigravity: (r) => ({ decision: 'deny', reason: r }),
 	claude: (r) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: r } }),
 };
 // No process.exit(): exiting at once can cut off the answer while it's still being written to the pipe.
 if (reason) process.stdout.write(JSON.stringify((answers[agent] || answers.claude)(reason)));
+// Antigravity's PreToolUse hooks must always answer; its "allow" leaves the call to its own approval rules.
+else if (agent === 'antigravity') process.stdout.write(JSON.stringify({ decision: 'allow' }));

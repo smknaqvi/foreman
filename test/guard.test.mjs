@@ -295,12 +295,13 @@ test('runs end to end through the shim `foreman init` installs', () => {
 test('answers every agent tool in its own format, and plain commands for any other', () => {
 	const repo = repoOn('feature');
 	const bin = join(ROOT, 'bin/foreman.mjs');
-	for (const agent of ['claude', 'codex', 'cursor', 'gemini']) {
+	for (const agent of ['claude', 'codex', 'cursor', 'gemini', 'antigravity']) {
 		const run = (command) => spawnSync('node', [bin, 'guard', '--agent', agent], { input: JSON.stringify(samplePayload(agent, command, repo)), encoding: 'utf8' });
 		assert.ok(refused(agent, run('gh pr merge 1')), `${agent} refuses a merge`);
 		assert.ok(refused(agent, run(`git push origin main`)), `${agent} refuses a push to main`);
 		const fine = run('git status');
-		assert.deepEqual([fine.stdout, fine.status], ['', 0], `${agent}: no answer at all for a fine command`);
+		// Antigravity's hooks must answer: "allow" hands the call on to its own approval rules.
+		assert.deepEqual([fine.stdout, fine.status], [agent === 'antigravity' ? '{"decision":"allow"}' : '', 0], `${agent}: a fine command`);
 	}
 	const plain = spawnSync('node', [bin, 'guard', '--command', 'gh pr merge 1', '--cwd', repo], { encoding: 'utf8' });
 	assert.equal(plain.status, 2);
@@ -316,10 +317,10 @@ test('the shim finds its checkout from its own location, for tools that set no p
 	mkdirSync(join(project, 'node_modules/@smknaqvi'), { recursive: true });
 	symlinkSync(ROOT, join(project, 'node_modules/@smknaqvi/foreman'));
 	const { CLAUDE_PROJECT_DIR: _, ...env } = process.env;
-	for (const agent of ['codex', 'cursor', 'gemini']) {
+	for (const agent of ['codex', 'cursor', 'gemini', 'antigravity']) {
 		const run = (command) => spawnSync('node', [join(project, '.claude/hooks/foreman-guard.mjs'), '--agent', agent], { input: JSON.stringify(samplePayload(agent, command, project)), encoding: 'utf8', cwd: tmpdir(), env });
 		assert.ok(refused(agent, run('gh pr merge 1')), agent);
-		assert.equal(run('gh pr view 1').stdout, '', agent);
+		assert.equal(run('gh pr view 1').stdout, agent === 'antigravity' ? '{"decision":"allow"}' : '', agent);
 	}
 	// Not installed: refused in that tool's own format, not Claude Code's.
 	unlinkSync(join(project, 'node_modules/@smknaqvi/foreman'));
@@ -336,6 +337,9 @@ test('reads the command from each tool\'s payload', () => {
 	assert.equal(payloadCwd({ cwd: '/a/feature', tool_input: { command: 'git push', dir_path: '../main' } }), '/a/main', 'Gemini CLI\'s dir_path');
 	assert.equal(payloadCwd({ cwd: '/a/feature', tool_input: { command: 'git push', workdir: '/b' } }), '/b', 'Codex\'s workdir');
 	assert.equal(payloadCwd({ command: 'ls', cwd: '/a', workspace_roots: ['/a'] }), '/a');
+	const ag = { toolCall: { name: 'run_command', args: { CommandLine: 'gh pr merge 1', Cwd: '/a/main' } }, workspacePaths: ['/a/feature'] };
+	assert.equal(payloadCommand(ag), 'gh pr merge 1', 'Antigravity\'s CommandLine');
+	assert.equal(payloadCwd(ag), '/a/main', 'Antigravity\'s Cwd');
 });
 
 test('git\'s pre-push check refuses pushes to the base branch only', () => {
