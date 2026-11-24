@@ -223,9 +223,11 @@ test('init --agents antigravity: its hooks.json, and links to every playbook in 
 	assert.equal(hooks['foreman-guard'].PreToolUse[0].matcher, 'run_command');
 	const command = hooks['foreman-guard'].PreToolUse[0].hooks[0].command;
 	assert.match(command, /--agent antigravity/);
-	// The command as a shell runs it: outside the checkout it refuses (valid JSON), inside it finds the shim.
-	const outside = execFileSync('sh', ['-c', command], { cwd: tmpdir(), input: '{}', encoding: 'utf8' });
-	assert.equal(JSON.parse(outside).decision, 'deny');
+	// The command as a shell runs it: outside the checkout it still refuses gh and git push (and allows the rest).
+	const outside = (c) => JSON.parse(execFileSync('sh', ['-c', command], { cwd: tmpdir(), input: JSON.stringify({ toolCall: { name: 'run_command', args: { CommandLine: c } } }), encoding: 'utf8' })).decision;
+	assert.equal(outside('gh pr merge 1'), 'deny');
+	assert.equal(outside('git push origin main'), 'deny');
+	assert.equal(outside('ls'), 'allow');
 	for (const skill of ['coordinate-agents', 'work-an-issue', 'local-site']) {
 		assert.ok(lstatSync(join(dir, '.agents/skills', skill)).isSymbolicLink(), skill);
 		assert.ok(existsSync(join(dir, '.agents/skills', skill, 'SKILL.md')), `${skill} resolves`);
@@ -256,6 +258,12 @@ test('init --agents antigravity: its hooks.json, and links to every playbook in 
 	cli(dir, 'init', '--agents', 'claude,antigravity');
 	assert.throws(() => lstatSync(join(dir, '.agents/skills/local-site')), 'the dangling link is removed');
 	assert.ok(!lstatSync(join(dir, '.agents/skills/ours')).isSymbolicLink(), 'the repo\'s own folder stays');
+
+	// The self-test runs the command the settings hold, so a replaced one fails it.
+	const fake = JSON.parse(readFileSync(join(dir, '.agents/hooks.json'), 'utf8'));
+	fake['foreman-guard'].PreToolUse[0].hooks[0].command = `echo '{"decision":"allow"}' # foreman-guard`;
+	writeFileSync(join(dir, '.agents/hooks.json'), JSON.stringify(fake));
+	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}Antigravity: blocks gh pr merge/.test(e.stdout));
 });
 
 test('init: a .agents/ folder alone (Codex skills) is not an Antigravity repo; an old shim is replaced', () => {
