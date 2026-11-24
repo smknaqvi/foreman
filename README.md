@@ -324,18 +324,47 @@ Some PRs are so narrow that a rule can check them as well as a review would: a b
 ```json
 "autoApprove": [{
   "name": "WordPress and plugin version updates",
-  "branch": "^plugin-updates/",
+  "branch": "plugin-updates/.+",
   "versionsOnly": true,
   "files": {
-    ".wp-env.json": "^\\s*(\"core\": )?\"https://(downloads\\.)?wordpress\\.org/[\\w./-]+\\.zip\",?$",
-    "docker-compose.yml": "^\\s*image: wordpress:[\\w.-]+$"
+    ".wp-env.json": "\\s*(\"core\": )?\"https://(downloads\\.)?wordpress\\.org/[\\w./-]+\\.zip\",?",
+    "docker-compose.yml": "\\s*image: wordpress:[\\w.-]+"
   }
 }]
 ```
 
-A PR is approved only if its branch matches, it isn't from a fork or a draft, every file it changes is listed (and edited, not added, deleted or binary), every line it adds or removes matches that file's pattern (and, with `versionsOnly`, differs from the line it replaces only in its numbers, so a name can't be swapped), and `requiredCheck` passed on its head. Anything else is left open, with the reason printed. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind). Keep the patterns tight: they are the review.
+Every pattern must match the whole branch name or line, as if wrapped in `^(?:…)$`: a line that merely contains a version doesn't pass. A PR is approved only if its branch matches, it isn't from a fork or a draft, every file it changes is listed (and edited: not added, deleted, binary or changed in mode), every line it adds or removes matches that file's pattern (and, with `versionsOnly`, differs from the line it replaces only in its numbers, so a name can't be swapped), and `requiredCheck` passed on its head. When several rules match the branch, any one that accepts the change is enough. Anything else is left open, with the reason printed. `--merge` then merges it through the same gate as `tick` (a clean rebase if it's behind), and like `tick` merges nothing while the base branch's CI is red. Keep the patterns tight: they are the review.
 
-Run it from CI once the PR's check finishes, e.g. a workflow on `workflow_run` of the check for those branches, checking out the base branch (never the PR's code) and running `npx --no-install foreman auto-approve --merge`. A merge made with a workflow's `GITHUB_TOKEN` starts no workflows, so if a deploy follows the base branch's checks, have that job start them (`gh workflow run <check>.yml --ref main`).
+Run it from CI once the PR's check finishes: a workflow on `workflow_run` of the check, checking out the base branch (never the PR's code):
+
+```yaml
+name: Auto-approve
+on:
+  workflow_run:
+    workflows: [verify]          # The workflow that runs requiredCheck.
+    types: [completed]
+concurrency: foreman-auto-approve  # One at a time, so two runs never merge at once.
+permissions:
+  contents: write       # Push a rebased head.
+  pull-requests: write  # Merge.
+  statuses: write       # The approval.
+  checks: read
+  actions: write        # Only to start the base branch's checks after merging (below).
+jobs:
+  auto-approve:
+    if: github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'plugin-updates/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main, fetch-depth: 0 }  # Full history: the diff needs the PR's merge base.
+      - run: npm ci
+      - run: npx --no-install foreman auto-approve --merge
+        env: { GH_TOKEN: "${{ github.token }}" }
+```
+
+(With a shallow checkout, `auto-approve` fetches the full history itself first.) Two things a workflow's `GITHUB_TOKEN` doesn't do, by GitHub's design: a push made with it starts no checks, and neither does a merge. So:
+- When a PR is behind, `--merge` rebases it and reuses the checks its approved commit passed. If it couldn't (no `requiredCheck`, or a `staleCheckPaths` path changed on the base since), the rebased head would need checks of its own that would never start: `auto-approve` leaves such a PR as it is and says it needs its checks re-run on the rebased head, for a person or agent to push or re-run.
+- If a deploy follows the base branch's checks, have the job start them after merging (`gh workflow run <check>.yml --ref main`).
 
 ## Running the checks on your own machine
 

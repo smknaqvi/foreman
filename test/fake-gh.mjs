@@ -3,7 +3,7 @@
  * A stand-in for the GitHub CLI, for test/merge.test.mjs, test/watchdog.test.mjs and test/auto.test.mjs. It answers exactly the calls scripts/merge.sh
  * makes, from a JSON state file ($FAKE_GH_STATE) the test controls, and records approvals and merges there.
  *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], verify: { sha: conclusion },
- *     failed: { sha: "names" }, checksPass, merged, origin? }
+ *     failed: { sha: "names" }, checksPass, merged, origin?, runs? (gh run list on the base) }
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -22,6 +22,7 @@ const [a, b] = args;
 const jq = args.includes('--jq');
 if (a === 'repo' && b === 'view') out(jq ? s.repo : JSON.stringify({ nameWithOwner: s.repo }));
 else if (a === 'pr' && b === 'list') out(JSON.stringify([{ number: s.pr.number ?? 7, headRefName: s.pr.branch, headRefOid: s.pr.head, isCrossRepository: false, isDraft: s.pr.isDraft, baseRefName: 'main' }]));
+else if (a === 'run' && b === 'list') out(JSON.stringify(s.runs ?? []));
 else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
 	let m;
