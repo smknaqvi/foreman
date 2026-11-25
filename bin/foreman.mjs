@@ -20,6 +20,21 @@ Coordinator
   tick [--dry-run]                        what needs no judgement: merge approved, green PRs (clean rebases
                                           only) and remove orphaned environments
 
+Shared memory (durable facts every agent reads, in memory/; only the Coordinator's memory PRs change it)
+  memory list                             one line per note: slug, type, description
+  memory check                            every note parses and is listed once in memory/MEMORY.md (exit 1
+                                          if not); warns about broken [[links]], near-duplicates, repo paths
+                                          that no longer exist and notes not updated in 180 days
+  memory updates [--since <date|sha>]     the "Memory updates" sections of merged PRs that no memory PR has
+                                          applied yet ("Memory PR: applies memory updates from #12, #40"
+                                          in its description), for the Coordinator to apply
+  memory add <slug> --description "<one line>" [--type project|decision|reference|feedback|user]
+             [--title <index title>] [--source "PR #12"]
+                                          a new note and its index line
+  memory import <folder> [--only <slug,slug>]
+                                          copy notes from a folder in the same format (a Claude Code memory
+                                          folder): skips slugs already here, never changes the source
+
 When every agent stops (a usage limit)
   watchdog install|uninstall              run a round every few minutes (launchd on macOS; prints a cron line
                                           elsewhere): after a usage-limit stop it runs tick, then starts a
@@ -110,6 +125,16 @@ async function main() {
 		case 'notify': {
 			const { values, positionals } = flags({ server: { type: 'string' }, token: { type: 'string' } });
 			return (await import('../lib/notify.mjs')).command(loadConfig(), positionals, values);
+		}
+		case 'memory': {
+			const { values, positionals } = flags({ since: { type: 'string' }, description: { type: 'string' }, type: { type: 'string' }, title: { type: 'string' }, source: { type: 'string' }, only: { type: 'string' }, 'pr-head': { type: 'string' }, base: { type: 'string' } });
+			let config;
+			try { config = loadConfig(); } catch (e) {
+				if (!values['pr-head']) throw e;
+				process.stderr.write(`couldn't run the memory check: ${e.message}\n`); // For foreman merge: not the notes' fault.
+				return 2;
+			}
+			return (await import('../lib/memory.mjs')).command(config, positionals, values);
 		}
 		case 'dashboard': {
 			const { values } = flags({ port: { type: 'string' }, open: { type: 'boolean' } });

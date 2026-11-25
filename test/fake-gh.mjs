@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * A stand-in for the GitHub CLI, for test/merge.test.mjs. It answers exactly the calls scripts/merge.sh
- * makes, from a JSON state file ($FAKE_GH_STATE) the test controls, and records approvals and merges there.
+ * A stand-in for the GitHub CLI, for test/merge.test.mjs (and the merged-PR list `foreman memory updates`
+ * reads, test/memory.test.mjs). It answers exactly the calls scripts/merge.sh makes, from a JSON state file
+ * ($FAKE_GH_STATE) the test controls, and records approvals and merges there. `pr list` returns `mergedPrs`
+ * and records the call in `calls`.
  *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], verify: { sha: conclusion },
  *     failed: { sha: "names" }, checksPass, merged, origin? }
  */
@@ -35,6 +37,10 @@ else if (a === 'api') {
 	if (json === 'state') out(s.merged ? 'MERGED' : s.pr.state);
 	else if (json === 'headRefOid') out(JSON.stringify({ headRefOid: s.pr.head }));
 	else out(`${s.pr.state} ${s.pr.isDraft} ${s.pr.head} ${s.pr.mergeable}`);
+} else if (a === 'pr' && b === 'list') {
+	s.calls = [...(s.calls ?? []), args.join(' ')];
+	save();
+	out(JSON.stringify(s.mergedPrs ?? []));
 } else if (a === 'pr' && b === 'checks') process.exit(s.checksPass ? 0 : 1);
 else if (a === 'pr' && b === 'merge') {
 	const head = args[args.indexOf('--match-head-commit') + 1];

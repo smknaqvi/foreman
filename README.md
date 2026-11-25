@@ -6,6 +6,7 @@ Run a crew of coding agents on one GitHub repo, in parallel, without anyone merg
 - Each **Builder** takes its issue to a PR, waits for approval, then merges it through `foreman merge`. That command refuses anything that isn't exactly what was approved, up to date and green.
 - An **Observer** prints a line whenever something needs the Coordinator's attention.
 - **Guards** make the gated path the only path: a hook in each agent tool (Claude Code, Codex, Cursor, Antigravity, Gemini CLI) blocks `gh pr merge`, merge API calls, writes to the base branch and hand-written approvals, and git's pre-push check refuses pushes to the base branch from any tool.
+- **Shared memory** in the repo: durable facts every agent reads before working (gotchas, decisions and their reasons, where things live, what the team prefers), in Claude Code's memory format, so every tool on every machine sees the same ones. Only the Coordinator changes it, from what Builders propose in their PRs, and it reviews the notes for contradictions and facts that have gone stale.
 - A **Watchdog** (optional, no AI) notices when every agent has stopped at a usage limit, merges what's approved and green, and starts a new Coordinator once the limit resets.
 - **Notifications** (optional) reach you on Slack, Discord or your phone when something needs a person: an issue labeled for a decision, a red base branch, a usage-limit stop, a Coordinator that finished.
 - A **dashboard** (optional, read-only) shows all of it in a browser, live.
@@ -22,22 +23,27 @@ flowchart LR
     gh[("<b>GitHub</b><br/>issues, PRs,<br/>approval statuses, CI")]
     gate{{"<b>foreman merge</b><br/>approved at this commit?<br/>up to date? green?"}}
     main[("<b>main</b>")]
+    mem[("<b>memory/</b> on main<br/>one fact per note,<br/>MEMORY.md index")]
 
     obs -- "one line per event" --> coord
     obs -. "polls" .-> gh
     coord -- "launch" --> bld
     coord -- "claim issue,<br/>approve reviewed sha" --> gh
-    bld -- "push branch, open PR" --> gh
+    bld -- "push branch, open PR<br/>(with Memory updates)" --> gh
     bld -- "after approval" --> gate
     gh -. "approval, checks" .-> gate
     gate -- "squash merge" --> main
     bld --x|"gh pr merge, push to main:<br/>blocked by hook + pre-push"| main
+    mem -. "read before starting" .-> bld
+    mem -. "read, reviewed" .-> coord
+    coord -- "applies Memory updates<br/>in its own memory PR" --> gate
+    gate -- "merged after review<br/>(memory/ is a risky path)" --> mem
 
     classDef agent fill:#eef4ff,stroke:#4a6fd1,color:#1b2a4e
     classDef proc fill:#f6f8fa,stroke:#57606a,color:#1f2328
     classDef gatecls fill:#fff4e5,stroke:#d98a00,color:#4a2f00,stroke-width:2px
     class coord,bld agent
-    class obs,gh,main proc
+    class obs,gh,main,mem proc
     class gate gatecls
     linkStyle 8 stroke:#c43c3c,color:#c43c3c,stroke-dasharray:4 3
 ```
@@ -51,11 +57,13 @@ sequenceDiagram
     participant B as Builder
     participant F as foreman CLI
     participant G as GitHub
+    participant M as memory/
 
     C->>F: claim #35;12 --branch --port
     F->>G: working label + launch comment
     C->>B: launch in its own worktree
-    B->>G: push branch, open PR "Closes #35;12"
+    B->>M: read MEMORY.md and the notes it needs
+    B->>G: push branch, open PR "Closes #35;12"<br/>with a "Memory updates" section
     G-->>C: checks passed (via foreman observe)
     C->>C: note the head sha, then review
     C->>F: approve PR sha
@@ -73,6 +81,11 @@ sequenceDiagram
     else checks not done
         F-->>B: refuse: wait for checks
     end
+    C->>F: memory updates
+    F->>G: merged PRs, and what memory PRs applied
+    F-->>C: "Memory updates" no memory PR has applied
+    C->>G: memory PR: "Memory PR: applies memory updates from #35;12"<br/>(same review, approval and merge)
+    G->>M: merged: notes added, corrected, removed
 ```
 
 </details>
@@ -82,12 +95,12 @@ sequenceDiagram
 Needs Node 20+, git 2.38+, bash and the GitHub CLI (`gh auth login`).
 
 ```sh
-npm install --save-dev github:smknaqvi/foreman#v0.3.0    # pin a release tag; the package is @smknaqvi/foreman, the command foreman
+npm install --save-dev github:smknaqvi/foreman#v0.4.0    # pin a release tag; the package is @smknaqvi/foreman, the command foreman
 npx --no-install foreman init          # config, git hook, merge guard, the two playbooks (--agents, --ci [--self-hosted <labels>], --conductor for more)
 npx --no-install foreman doctor        # checks it all works
 ```
 
-Then fill in `foreman.config.json`, create the labels `init` prints, and say in your AGENTS.md which files each kind of work owns and where the playbooks are. Ask your agent to "coordinate the agents on milestone X".
+Then fill in `foreman.config.json`, create the labels `init` prints, and say in your AGENTS.md which files each kind of work owns, where the playbooks are, and "Read memory/MEMORY.md before starting". Ask your agent to "coordinate the agents on milestone X".
 
 ### Any coding agent
 
@@ -121,6 +134,9 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `observe [--once]` | One line per event: PR opened or closed, checks finished, a preview deployment ready, base CI failed, Docker memory high. Meant to run in the background while the Coordinator works (Claude Code: the Monitor tool). Also sends [notifications](#notifications) |
 | `dashboard [--port <p>] [--open]` | The crew in a browser, live: what `status` shows plus a feed of what `observe` would print. See [Dashboard](#dashboard) |
 | `tick [--dry-run]` | The steps that need no judgement: rebase approved, green PRs onto the base (clean rebases only) and merge them through `merge`; remove orphaned environments. Never reviews or approves |
+| `memory list` / `memory check` | The shared memory's notes, one line each; whether they're all well-formed and listed once in the index (exit 1 if not), and what looks stale. See [Shared memory](#shared-memory) |
+| `memory updates [--since <date\|sha>]` | The "Memory updates" sections of merged PRs that no memory PR has applied yet, for the Coordinator to apply. Looks back to when the index was added, or to `--since` |
+| `memory add <slug> --description "<text>" [--type <t>]` / `memory import <folder> [--only <a,b>]` | Start a note and its index line; copy notes in from a Claude Code memory folder |
 | `watchdog install\|uninstall\|status\|pause\|unpause\|stop\|run` | Keeps the crew going after a usage limit. See [When every agent stops](#when-every-agent-stops) |
 | `env start [--port <p>]` | Start this checkout's dev server in the background on its port and wait until it listens (`dev-server`, `nextjs`, `rails`) |
 | `env remove [--port <p>]` | Remove this checkout's environment, running or stopped, and anything on that port. For CI on a machine that isn't wiped between jobs |
@@ -147,9 +163,10 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `verifyCommand` | What a Builder runs before saying it's done |
 | `docsOnly` | Regex: PRs that only change matching files don't wait for checks (`\.md$`) |
 | `staleCheckPaths` | When these change on the base (e.g. screenshot baselines), a rebased PR waits for its own checks |
-| `riskyPaths` | Get the stricter review. `.github/`, `.claude/`, `.githooks/`, the config and `package*.json` are always included |
+| `riskyPaths` | Get the stricter review. `.github/`, `.claude/`, `.githooks/`, the config and `package*.json` are always included, and the [shared memory](#shared-memory)'s folder once it's set up |
 | `hotspots` | Files several Builders would want. The Coordinator serializes work on them |
 | `playbooks` | Your project's skills or docs that every Builder reads |
+| `memory` | `dir`: the [shared memory](#shared-memory)'s folder, relative to the config (`memory`; empty switches it off) |
 | `maxBuilders` | Builders at once |
 | `env` | The environment adapter (or a list of them) and its options (next section) |
 | `observe` | `intervalSeconds`, `memoryHigh`, `memoryCritical` (%) |
@@ -207,6 +224,54 @@ export default {
 **Process knobs.** Change labels, the comment wording, the approval context, the required check, which paths count as risky or stale, and the number of Builders, all in the config.
 
 **As a library.** `import { loadConfig, blockedReason, loadAdapter } from '@smknaqvi/foreman'`.
+
+## Shared memory
+
+Agents learn things while they work: a gotcha that cost an hour, a decision and why it was made, where something lives, what the team asked for. An agent tool's own memory helps only one person, on one machine, in one tool (Claude Code keeps one per user in `~/.claude/projects/<project>/memory/`). foreman keeps a shared one in the repo, so every agent in every tool starts from the same facts, and changes to them are reviewed like code.
+
+**What it is.** `memory/` (`memory.dir`) holds one fact per note, `memory/<slug>.md`, and an index, `memory/MEMORY.md`, with a short header and one line per note. AGENTS.md tells every agent to read the index before starting, then the notes that touch its work. `foreman init` writes the index.
+
+**The format** is Claude Code's, so notes move between the two:
+
+```md
+---
+name: deploy-cache
+description: Deploys need a warm page cache, or the first visitors wait 20 seconds
+type: decision
+updated: 2026-11-24
+source: "PR #12"
+---
+
+The deploy script warms it (deploy/warm.sh). Skipping it looked fine in testing,
+where the cache was already warm. See [[deploy-steps]].
+```
+
+- `name` is the file name without `.md`. `description` is one line. `type` is `project`, `decision`, `reference`, `feedback` or `user`. Claude Code's nested form (`metadata:` with `type:` under it) is read too.
+- `updated` (optional) is when someone last checked it's true. `source` (optional) is where it came from. Quote a value with `#` or `: ` in it.
+- Notes link to each other with `[[other-slug]]`.
+- Each index line is `- [Deploy cache](deploy-cache.md) — warm the cache after every deploy`.
+- A Builder's PR proposes changes under a `## Memory updates` heading, one bullet each: `- **new** …`, ``- **correct `slug`** …``, ``- **delete `slug`** …``, or `none`.
+
+**Only the Coordinator writes it,** and review is what keeps it that way, as with the plan file.
+- Builders never edit `memory/`. Their PR has a "Memory updates" section instead: new facts, corrections to a note (by its name), notes to delete, or "none".
+- Once the memory is set up (its index is there), the folder is always a risky path, so `foreman status` marks any PR touching it RISKY and it gets the stricter review; before that, a PR adding the index is. The Coordinator turns away a Builder's PR that changes it and asks for a "Memory updates" section instead. `foreman merge` doesn't check who changed it.
+- After merges, the Coordinator runs `foreman memory updates`. It prints the sections of merged PRs that no memory PR has applied yet. The Coordinator applies them in its own small memory PR (a branch like `foreman/memory-<date>`; it can be the same PR as the plan updates), whose description says which PRs it handled: "Memory PR: applies memory updates from #12, #40". That line takes them off the list whatever the PR changed, so declining them all only needs the line in some small Coordinator PR (or `foreman memory updates --since <date>` to look past them). A note's `source: "PR #12"` on the base counts too. So a PR that merged while the memory PR was open isn't lost. The window starts when `memory/MEMORY.md` was added to the base (by commit history, not clocks), or at `--since`.
+- The memory PR goes through the usual review, approval and merge. It only changes Markdown, so `foreman merge` won't wait for CI on it, but once the memory is set up on the base it runs `foreman memory check` (errors only, locally, on the PR's own notes) on any PR that changes the memory folder, and refuses if a note is broken. The folder comes from the base's `foreman.config.json`, so a PR can't switch the check off. If the check itself can't run (a broken config, a git error), `merge` refuses and says so.
+- `foreman status` shows how many notes there are, and any errors.
+
+**The memory review.** A wrong note is worse than none: every agent trusts it. At the end of each wave, and at least weekly, the Coordinator reads every note (`foreman memory list`, then the files), looking for:
+- notes that contradict each other,
+- notes the code or recent PRs have made untrue,
+- duplicates to merge,
+- anything private: secrets, where keys live, one person's own details.
+
+It fixes them in the next memory PR. `foreman memory check` does the mechanical part, and must pass:
+- **Errors (exit 1):** a note that doesn't parse, or lacks its name, description or a valid type; a name that isn't the file name; a note the index doesn't list exactly once; an index line to a file that doesn't exist.
+- **Warnings:** `[[links]]` to missing notes; notes with the same or nearly the same description; repo paths in backticks that no longer exist; notes whose `updated` is over 180 days old.
+
+**Bringing in a Claude Code memory.** `foreman memory import ~/.claude/projects/<project>/memory [--only a,b]` copies notes into `memory/` and adds their index lines (with the source index's titles). It skips slugs already there, turns `metadata.type` into `type`, drops Claude Code's other metadata (session ids, timestamps), and never changes the source folder. Read every imported note before committing: a person's memory often holds things the whole repo shouldn't. The Coordinator does this on its memory branch; a person's own memory otherwise stays personal.
+
+**Switching it off:** `"memory": { "dir": "" }`. `init` adopts an existing `memory/` folder only if it's empty or holds nothing but notes. One holding code or ordinary Markdown docs is left alone: set another `dir`.
 
 ## When every agent stops
 
@@ -276,8 +341,9 @@ It's **read-only** on purpose: approving means reviewing, which is the Coordinat
 1. **Approval is bound to a commit.** `approve` writes a commit status on the reviewed sha, and only if the PR is still at that sha. Anything pushed later is unapproved.
 2. **A clean rebase keeps the approval.** `merge --rebased-from <approved sha>` replays the approved commit onto the current base (`git merge-tree`). It accepts the PR only if that gives exactly the PR's files. Then it copies the approval onto the new head. A rebase that needed conflict fixes, or slipped in a change, goes back for review.
 3. **Up to date and green.** The PR must contain the current base. The required check must have actually passed: on the head, or on the approved commit for a clean rebase, unless a `staleCheckPaths` path changed since. No check may have failed on the head.
-4. **One at a time.** A lock shared by every worktree on the machine serializes merges.
-5. **No way around it.**
+4. **Memory notes that parse.** Once the [shared memory](#shared-memory) is set up on the base, a PR that changes its folder merges only if `foreman memory check` finds no errors in the PR's notes (docs-only or not). The folder comes from the base's config. Who may change it is left to review.
+5. **One at a time.** A lock shared by every worktree on the machine serializes merges.
+6. **No way around it.**
    - The guard hook reads each shell command the way bash would. That includes quoting, heredocs, `$(...)`, `bash -c`, `eval`, `xargs`, `env`, `cd` and branch switches.
    - It blocks `gh pr merge`, merge and ref-writing API calls (REST and GraphQL), pushes to the base branch, `--no-verify`, switching off `core.hooksPath`, and writing the approval status by hand.
    - Git's pre-push check catches pushes to the base however they're typed.
@@ -291,7 +357,9 @@ flowchart TD
     open -- no --> r1["Refuse"]
     open -- yes --> uptodate{"Contains the<br/>current main?"}
     uptodate -- no --> r2["Refuse: rebase and retry"]
-    uptodate -- yes --> head{"Approved at<br/>the head?"}
+    uptodate -- yes --> notes{"Changes the memory folder<br/>(as set up on main)? Then do<br/>its notes pass memory check?"}
+    notes -- "notes broken" --> r7["Refuse: fix the notes"]
+    notes -- "no memory change,<br/>or they pass" --> head{"Approved at<br/>the head?"}
     head -- yes --> trusthead["Trust the head's checks"]
     head -- no --> rebased{"Approved at the<br/>--rebased-from sha?"}
     rebased -- no --> r3["Refuse: needs review"]
@@ -309,7 +377,7 @@ flowchart TD
 
     classDef refuse fill:#fdecec,stroke:#c43c3c,color:#4a1212
     classDef ok fill:#e8f6ec,stroke:#2f8f4e,color:#123a1f
-    class r1,r2,r3,r4,r5,r6 refuse
+    class r1,r2,r3,r4,r5,r6,r7 refuse
     class merge ok
 ```
 
@@ -331,7 +399,7 @@ While the runner is offline, runs wait as **queued** and start when it's back: t
 
 ## Limits
 
-- **Guardrails, not security.** The guards stop accidental bypasses, not someone determined to get around them. Where GitHub branch protection is available, also make `approvalContext` and `requiredCheck` required status checks. The guards are then a second layer.
+- **Guardrails, not security.** The guards stop accidental bypasses, not someone determined to get around them. Some rules are only review and the playbooks: "only the Coordinator writes the shared memory" is one. `foreman merge` doesn't enforce it; the folder being a risky path is what puts a Builder's change to it in front of the Coordinator. Where GitHub branch protection is available, also make `approvalContext` and `requiredCheck` required status checks. The guards are then a second layer.
 - **The guard reads `foreman.config.json` from the agent's own checkout,** so a Builder that edits it changes what the guard protects locally. The config is always a risky path, so such a PR gets the stricter review, and `merge` itself runs with whatever config the merging checkout has. A broken config makes the guard refuse every `gh` and `git push` command until it's fixed.
 - **The hook refuses `gh` and `git push` whenever it can't trust the guard:** when foreman isn't installed, when the installed version isn't the one `package-lock.json` pins (run `npm install` after a rebase that bumped it), or when the guard fails to load.
 - **The command guard needs the tool's hooks.** Claude Code, Codex, Cursor, Antigravity and Gemini CLI get it (`init --agents`). A tool without hooks gets the git pre-push check and the commands, but nothing stops it typing `gh pr merge`. The hook finds the shim from the checkout's root (Claude Code's `$CLAUDE_PROJECT_DIR`, Gemini CLI's `$GEMINI_PROJECT_DIR`, otherwise `git rev-parse --show-toplevel` from the session's folder, or Cursor's project root): a session started outside the checkout, or inside a submodule, may not find it. Each tool's hooks have their own gaps: Codex says some specialized tool paths skip them, and Cursor and Gemini CLI let a command run if a hook crashes (so does foreman's: a bug in the guard mustn't stall every command).
@@ -351,5 +419,5 @@ foreman runs on itself. `main` is protected: pull requests only, and all four te
 
 ```sh
 npm test    # the guard's command cases, the merge gate against real git repos and a fake gh, init, config, adapters,
-            # notifications, observe rounds and the dashboard
+            # notifications, observe rounds, the dashboard and the shared memory
 ```
