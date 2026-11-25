@@ -32,7 +32,7 @@ test('config: defaults without a file, merged with one, found from a subfolder',
 	assert.equal(c.baseBranch, 'trunk');
 	assert.equal(c.labels.working, 'busy');
 	assert.equal(c.labels.needsInput, 'needs team input', 'nested defaults survive a partial override');
-	assert.deepEqual(c.riskyPaths, [...RISKY_ALWAYS, 'memory/', 'deploy/'], 'the shared memory\'s folder is always risky while it\'s on');
+	assert.deepEqual(c.riskyPaths, [...RISKY_ALWAYS, 'memory/MEMORY.md', 'deploy/'], 'no memory set up yet: only a PR adding its index is risky');
 });
 
 test('config: explains what is wrong', () => {

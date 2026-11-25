@@ -83,12 +83,17 @@ test('parseNote reads foreman\'s form and Claude Code\'s nested metadata.type, w
 	assert.equal(back.source, 'PR #3');
 	assert.match(text, /^description: "Ports/m);
 	// Values YAML would read as another type, or trim, are quoted too, and read back as written.
-	for (const v of ['true', 'No', 'null', '~', '42', '-1.5', '1e3', '0x1f', '.inf', '2026-11-24', ' padded ', '']) {
+	for (const v of ['true', 'No', 'null', '~', '42', '-1.5', '1e3', '0x1f', '.inf', '2026-11-24', '']) {
 		const t = formatNote({ name: 'n', description: v, type: 'project' }, 'b');
 		assert.ok(t.split('\n').includes(`description: ${JSON.stringify(v)}`), `${JSON.stringify(v)} is quoted:\n${t}`);
 		assert.equal(parseNote(t).description, v, 'and reads back as written');
 	}
 	assert.match(formatNote({ name: 'n', description: 'Plain words, v1.2', type: 'project' }, 'b'), /^description: Plain words, v1\.2$/m);
+	assert.match(formatNote({ name: 'n', description: 'd', type: 'project', source: ' padded ' }, 'b'), /^source: " padded "$/m, 'spaces YAML would trim');
+	// A description of several lines (a | or multi-paragraph > value) is written as one.
+	const multi = formatNote({ name: 'n', description: 'First line\n\nSecond: part', type: 'project' }, 'b');
+	assert.match(multi, /^description: "First line Second: part"$/m);
+	assert.equal(parseNote(multi).description, 'First line Second: part');
 
 	assert.deepEqual(parseIndex('# M\n\n- [A](a.md) — hook a\n* [B](./b.md): hook b\n- not a link\n- [Guide](../AGENTS.md) — not a note\n').map((e) => [e.file, e.hook]), [['a.md', 'hook a'], ['b.md', 'hook b']]);
 });
@@ -155,6 +160,21 @@ test('memory check: warnings for what may be stale, exit 0', () => {
 	assert.deepEqual(checkMemory(loadConfig(dir), { warnings: false }).warnings, [], 'errors only, for foreman status');
 });
 
+test('memory check: paths in notes are looked up from the repo\'s top, then from the config\'s folder', () => {
+	const dir = repo();
+	rmSync(join(dir, 'foreman.config.json'));
+	write(dir, {
+		'lib/top.mjs': '', 'packages/app/foreman.config.json': '{}', 'packages/app/src/app.js': '',
+		'packages/app/memory/MEMORY.md': index('p'),
+		'packages/app/memory/p.md': note('p', 'Paths', 'reference', '', 'See `lib/top.mjs`, `src/app.js`, `lib/gone.mjs` and `src/gone.js`.'),
+	});
+	const r = cli(join(dir, 'packages/app'), ['memory', 'check']);
+	assert.equal(r.code, 0, r.out);
+	assert.match(r.out, /mentions `lib\/gone\.mjs`/);
+	assert.match(r.out, /mentions `src\/gone\.js`/);
+	assert.doesNotMatch(r.out, /lib\/top\.mjs|src\/app\.js/);
+});
+
 test('memory add writes a note and its index line, refuses an existing slug, and passes the check', () => {
 	const dir = repo();
 	assert.equal(cli(dir, ['init']).code, 0);
@@ -189,6 +209,7 @@ test('memory import copies a Claude Code memory folder: converts metadata.type, 
 		'deploy-notes.md': '---\nname: deploy-notes\ndescription: How deploys work\nmetadata:\n  type: project\n---\n\nThrough CI.\n',
 		'already-here.md': '---\nname: already-here\ndescription: Theirs\nmetadata:\n  type: project\n---\nTheirs.\n',
 		'no-type.md': '---\nname: no-type\ndescription: Missing its type\n---\n',
+		'multi.md': '---\nname: multi\ndescription: |\n  Two lines\n  of description\nmetadata:\n  type: reference\n---\nBody.\n',
 	});
 	const before = Object.fromEntries(readdirSync(source).map((f) => [f, [readFileSync(join(source, f), 'utf8'), statSync(join(source, f)).mtimeMs]]));
 
@@ -204,6 +225,8 @@ test('memory import copies a Claude Code memory folder: converts metadata.type, 
 	assert.match(r.out, /skipped deploy-notes: memory\/deploy-notes\.md already exists/);
 	assert.match(r.out, /skipped no-type: it has no type/);
 	assert.match(r.out, /imported user-role \(user\)/);
+	assert.match(r.out, /imported multi \(reference\): its description was several lines, now one/);
+	assert.equal(parseNote(readFileSync(join(dir, 'memory/multi.md'), 'utf8')).description, 'Two lines of description', 'and it parses back as one line');
 	assert.match(r.out, /remove anything private/);
 	const text = readFileSync(join(dir, 'memory/user-role.md'), 'utf8');
 	assert.match(text, /^type: user$/m, 'metadata.type becomes type');
@@ -229,15 +252,23 @@ test('memorySection: the "Memory updates" section of a PR body, in each way it i
 	assert.equal(memorySection('**Memory updates:**\n**new** one fact on its own line, bold first\n\n🤖 Generated with Claude Code\n'), '**new** one fact on its own line, bold first');
 	// A list item among the PR's other bulleted sections: its own items' markers don't end it, the next section does.
 	assert.equal(memorySection('- What changed\n- **Plan updates**: done\n- **Memory updates**: delete `old-note`, it no longer holds\n- **Hotspots**: none\n'), 'delete `old-note`, it no longer holds');
-	assert.equal(memorySection('- **Memory updates**:\n  - **new** indented, bold\n- **new** unindented, bold\n- **correct `a`**: also an update\n- **Hotspots**: none\n'),
-		'  - **new** indented, bold\n- **new** unindented, bold\n- **correct `a`**: also an update');
+	// The item form ends at the next bullet beside it, bold or not; its own (indented) items stay.
+	assert.equal(memorySection('- **Memory updates**:\n  - **new** indented, bold\n  - plain\n- **new** unindented: the next section\n'), '  - **new** indented, bold\n  - plain');
+	assert.equal(memorySection('- **Memory updates**: new: the cache\n- Verified with npm test\n'), 'new: the cache');
+	// The heading form ends at the next heading, a "Closes #N" line, a rule, or the attribution.
+	assert.equal(memorySection('## Memory updates\n- **new** a\n\nCloses #12\n'), '- **new** a');
+	assert.equal(memorySection('## Memory updates\n- **new** a\nFixes #3, and more\n'), '- **new** a');
+	assert.equal(memorySection('## Memory updates\n- **new** a\n\n---\nfooter\n'), '- **new** a');
 	assert.equal(memorySection('**Memory updates**\n\n- new: one\n- new: two\n\n🤖 Generated with Claude Code\n'), '- new: one\n- new: two');
 	// Bold titles with _ or * in them end a section like any other.
 	assert.equal(memorySection('- **Memory updates**: new: the cache\n- **Plan updates for my_db**: done\n'), 'new: the cache');
 	assert.equal(memorySection('**Memory updates**\n- new: the cache\n\n**Plan updates for my_db**\n- done\n'), '- new: the cache');
 	assert.equal(memorySection('### Memory Updates:\nnew: the cache\n---\nfooter'), 'new: the cache');
-	for (const none of ['## Memory updates\nnone\n', '- **Memory updates**: None.\n', '## Memory updates\n\n_n/a_\n', '## Memory updates\n\n## Plan updates\nx', 'No section here.', 'Memory updates go in the PR description.', '']) assert.equal(memorySection(none), '', JSON.stringify(none));
-	assert.deepEqual([...appliedIn('Memory PR.\n\nApplies memory updates from #12, #40 and #7.\n- **Applies memory updates from**: #3\n')], [12, 40, 7, 3]);
+	for (const none of ['## Memory updates\nNo memory updates.\n', '## Memory updates\n- None: nothing durable.\n', '- **Memory updates**: Nothing this time\n', '## Memory updates\nnone\n', '- **Memory updates**: None.\n', '## Memory updates\n\n_n/a_\n', '## Memory updates\n\n## Plan updates\nx', 'No section here.', 'Memory updates go in the PR description.', '']) assert.equal(memorySection(none), '', JSON.stringify(none));
+	assert.equal(memorySection('## Memory updates\nNo memory updates here, but a long sentence that says something worth keeping after all.\n').length > 0, true, 'only a short "no …" counts as none');
+	// Only the explicit marker line counts, whatever the PR changed.
+	assert.deepEqual([...appliedIn('Memory PR: applies memory updates from #12, #40 and #7.\n- **Memory PR:** applies memory updates from #3\n')], [12, 40, 7, 3]);
+	assert.deepEqual([...appliedIn('Applies memory updates from #5\n')], [], 'without "Memory PR:" it proves nothing');
 });
 
 test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest first, since the index was added', () => {
@@ -260,22 +291,24 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 		pr(2, '2026-03-02T00:00:00Z', '## Memory updates\n- new: the cache must be warm'),
 		pr(3, '2026-03-03T00:00:00Z', '- **Memory updates**: none'),
 		pr(4, '2026-03-04T00:00:00Z', '## Memory updates\n- new: applied already'),
-		pr(9, '2026-03-04T06:00:00Z', 'Memory PR.\n\nApplies memory updates from #4\n\n## Memory updates\n- not a proposal', ['memory/a.md']),
-		pr(10, '2026-03-04T07:00:00Z', 'Not a memory PR: it changes no note.\n\nApplies memory updates from #2'), // Claims #2, proves nothing.
+		pr(9, '2026-03-04T06:00:00Z', 'Memory PR: applies memory updates from #4\n\n## Memory updates\n- not a proposal'),
+		pr(10, '2026-03-04T07:00:00Z', 'Applies memory updates from #2'), // No "Memory PR:" marker: proves nothing.
+		pr(11, '2026-03-04T08:00:00Z', '## Memory updates\n- new: declined'),
+		pr(12, '2026-03-04T09:00:00Z', 'Plan updates, and every memory update declined.\n\nMemory PR: applies memory updates from #11'),
 		pr(6, '2026-03-12T00:00:00Z', '## Memory updates\n- new: B, applied on the branch'),
 		pr(7, '2026-03-09T00:00:00Z', '## Memory updates\n- new: merged while the last memory PR was open'),
 	] }));
 	const env = { PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: stateFile };
 	const r = cli(dir, ['memory', 'updates'], env);
 	assert.equal(r.code, 0, r.out);
-	assert.match(r.out, /since memory\/MEMORY\.md was added \([0-9a-f]{7}, 2026-03-01 12:00 UTC\) \(2 PRs already applied\)/);
+	assert.match(r.out, /since memory\/MEMORY\.md was added \([0-9a-f]{7}, 2026-03-01 12:00 UTC\) \(3 PRs already applied\)/);
 	assert.ok(r.out.indexOf('PR #2 ') < r.out.indexOf('PR #5 ') && r.out.indexOf('PR #5 ') < r.out.indexOf('PR #7 '), 'oldest first');
 	assert.match(r.out, /PR #2 PR 2 \(merged 2026-03-02 00:00 UTC\)\n {2}- new: the cache must be warm/);
 	assert.match(r.out, /PR #5 PR 5 .*\n {2}correct `a`: it is B now\n/);
 	assert.match(r.out, /PR #7 .*\n {2}- new: merged while the last memory PR was open/, 'merged before the latest memory change, but nothing applied it');
-	assert.doesNotMatch(r.out, /PR #(?:[13469]|10) |before the memory existed|applied already|not a proposal|applied on the branch/);
+	assert.doesNotMatch(r.out, /PR #(?:[13469]|1[012]) |before the memory existed|applied already|not a proposal|applied on the branch|declined/);
 	assert.match(r.out, /3 PRs to apply\. On a memory branch \(e\.g\. foreman\/memory-\d{4}-\d{2}-\d{2}\)/);
-	assert.match(r.out, /Applies memory updates from #2, #5, #7/);
+	assert.match(r.out, /Memory PR: applies memory updates from #2, #5, #7/);
 	assert.match(r.out, /Review, approve and merge it like any other/);
 	assert.doesNotMatch(r.out, /warn/);
 	assert.match(JSON.parse(readFileSync(stateFile, 'utf8')).calls.at(-1), /--state merged --base main --limit 200 .*--search merged:>=2026-02-28/);
@@ -321,12 +354,15 @@ test('config: memory is on by default and validated; its folder is always risky 
 	const dir = repo();
 	const c = loadConfig(dir);
 	assert.deepEqual(c.memory, { dir: 'memory' });
-	assert.ok(c.riskyPaths.includes('memory/'), 'any PR touching it gets the stricter review');
+	assert.ok(c.riskyPaths.includes('memory/MEMORY.md') && !c.riskyPaths.includes('memory/'), 'not set up: only a PR adding the index is risky');
+	write(dir, { 'memory/MEMORY.md': '# Memory\n' });
+	assert.ok(loadConfig(dir).riskyPaths.includes('memory/'), 'set up: any PR touching it gets the stricter review');
 	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ memory: { dir: './docs/memory/' } }));
 	assert.equal(loadConfig(dir).memory.dir, 'docs/memory');
+	write(dir, { 'docs/memory/MEMORY.md': '# Memory\n' });
 	assert.ok(loadConfig(dir).riskyPaths.includes('docs/memory/'));
 	// A config in a subfolder: the memory is that folder's, and its path from the repo's top is what's risky.
-	write(dir, { 'packages/app/foreman.config.json': '{}' });
+	write(dir, { 'packages/app/foreman.config.json': '{}', 'packages/app/memory/MEMORY.md': '# Memory\n' });
 	const sub = loadConfig(join(dir, 'packages/app'));
 	assert.equal(memoryFolder(sub), join(dir, 'packages/app/memory'));
 	assert.ok(sub.riskyPaths.includes('packages/app/memory/'));
@@ -335,12 +371,14 @@ test('config: memory is on by default and validated; its folder is always risky 
 		assert.throws(() => loadConfig(dir), /memory\.dir/, JSON.stringify(bad));
 	}
 	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ memory: { dir: '' } }));
-	assert.ok(!loadConfig(dir).riskyPaths.includes('memory/'), 'off: nothing to protect');
+	assert.ok(!loadConfig(dir).riskyPaths.some((p) => p.startsWith('memory')), 'off: nothing to protect');
 	const off = cli(dir, ['memory', 'check']);
 	assert.equal(off.code, 0);
 	assert.match(off.out, /Shared memory is off/);
-	cli(dir, ['init']);
-	assert.ok(!existsSync(join(dir, 'memory')), 'init writes no memory when it is off');
+	const fresh = repo();
+	writeFileSync(join(fresh, 'foreman.config.json'), JSON.stringify({ memory: { dir: '' } }));
+	cli(fresh, ['init']);
+	assert.ok(!existsSync(join(fresh, 'memory')), 'init writes no memory when it is off');
 });
 
 test('init creates the memory index once, never replaces it, and leaves a folder of that name holding code alone', () => {
@@ -391,5 +429,6 @@ test('init creates the memory index once, never replaces it, and leaves a folder
 	const notes = repo();
 	write(notes, { 'memory/n.md': note('n', 'A note'), 'memory/m.md': '---\nname: m\ndescription: Claude Code\'s form\nmetadata:\n  type: user\n---\nx\n', 'memory/.DS_Store': '' });
 	assert.match(cli(notes, ['init']).out, /lists the 2 notes already there/);
+	assert.match(readFileSync(join(notes, 'memory/MEMORY.md'), 'utf8'), /^- \[N\]\(n\.md\) — A note$/m, 'the same index lines memory add writes');
 	assert.equal(cli(notes, ['memory', 'check']).code, 0);
 });

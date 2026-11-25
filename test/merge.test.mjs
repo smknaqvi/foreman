@@ -179,3 +179,21 @@ test('a required check whose name has spaces and & is looked up by its exact nam
 	t.state.approved.push(t.pr); t.state.verify[t.pr] = 'success'; t.state.checkName = 'Build & Test (ubuntu, 20)'; t.save();
 	assert.equal(t.merge([], { requiredCheck: 'Build & Test (ubuntu, 20)' }).merged, true);
 });
+
+test('a PR that changes the shared memory merges only if its notes check out (memory PRs skip the other checks)', () => {
+	const note = (description) => `---\nname: a\n${description ? `description: ${description}\n` : ''}type: project\n---\n\nA fact.\n`;
+	const index = '# Memory\n\n## Notes\n\n- [A](a.md) — a\n';
+	const broken = setup({ 'memory/MEMORY.md': index, 'memory/a.md': note('') });
+	broken.state.approved.push(broken.pr); broken.state.checksPass = false; broken.save();
+	const r = broken.merge([]);
+	assert.equal(r.merged, false, r.out);
+	assert.match(r.out, /FAIL {2}memory\/a\.md has no description/);
+	assert.match(r.out, /its shared memory notes don't check out/);
+
+	const good = setup({ 'memory/MEMORY.md': index, 'memory/a.md': note('A fact') });
+	good.state.approved.push(good.pr); good.state.checksPass = false; good.save();
+	const ok = good.merge([]);
+	assert.equal(ok.merged, true, ok.out);
+	assert.match(ok.out, /The PR's memory\/ checks out \(1 note\)/);
+	assert.match(ok.out, /only changes documentation: not waiting for checks/);
+});

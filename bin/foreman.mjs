@@ -127,7 +127,7 @@ async function main() {
 			return (await import('../lib/notify.mjs')).command(loadConfig(), positionals, values);
 		}
 		case 'memory': {
-			const { values, positionals } = flags({ since: { type: 'string' }, description: { type: 'string' }, type: { type: 'string' }, title: { type: 'string' }, source: { type: 'string' }, only: { type: 'string' } });
+			const { values, positionals } = flags({ since: { type: 'string' }, description: { type: 'string' }, type: { type: 'string' }, title: { type: 'string' }, source: { type: 'string' }, only: { type: 'string' }, 'pr-head': { type: 'string' }, base: { type: 'string' } });
 			return (await import('../lib/memory.mjs')).command(loadConfig(), positionals, values);
 		}
 		case 'dashboard': {

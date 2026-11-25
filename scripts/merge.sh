@@ -4,7 +4,8 @@
 #      or on the pre-rebase commit given with --rebased-from, provided replaying that approved change onto
 #      the current base yields exactly the head's files (so only a clean rebase passes),
 #   2. it is up to date with the base branch,
-#   3. the required check passed, and nothing else failed. Not waited for when every changed file matches
+#   3. if it changes the shared memory (memory.dir), its notes pass `foreman memory check` (errors only),
+#   4. the required check passed, and nothing else failed. Not waited for when every changed file matches
 #      $FOREMAN_DOCS_ONLY, or when it is a clean rebase of an approved commit whose own required check
 #      passed (the base branch's CI still runs after the merge) and none of $FOREMAN_STALE_PATHS changed
 #      on the base since that commit.
@@ -56,6 +57,12 @@ if ! git merge-base --is-ancestor "origin/$base" "$head"; then
 	echo "PR #$pr is behind $base: rebase on origin/$base, push --force-with-lease, then rerun with --rebased-from <the sha you were approved at>." >&2
 	exit 1
 fi
+
+# The shared memory's notes, when the PR changes them: memory PRs only change Markdown, so the checks below
+# are skipped for them and CI's `foreman memory check` never gates them. Local and fast (no GitHub). Before
+# the approval is copied anywhere, so a refusal leaves nothing behind.
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+node "$here/../bin/foreman.mjs" memory check --pr-head "$head" --base "origin/$base" || { echo "PR #$pr: its shared memory notes don't check out (above). Fix them and push." >&2; exit 1; }
 
 checked="$head" # The commit whose checks must be green.
 # 2. Approval of this exact change (the base is now an ancestor of head, so replaying onto it is exact).

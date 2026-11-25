@@ -13,7 +13,7 @@ gh issue view <N> --comments
 git fetch origin && git rebase origin/<base>     # the base branch in foreman.config.json
 ```
 - Read the issue's checklist and "Done when", AGENTS.md, and every playbook listed in `foreman.config.json`.
-- **Read the shared memory:** `memory/MEMORY.md` (the folder is `memory.dir` in `foreman.config.json`), then every note that touches your work. They hold what earlier agents learned: gotchas, decisions and their reasons, where things live, what the team prefers. `npx --no-install foreman memory list` shows them all on one screen.
+- **Read the shared memory:** the index, `MEMORY.md`, in the memory folder (`memory/` by default, `memory.dir` in `foreman.config.json`), then every note that touches your work. They hold what earlier agents learned: gotchas, decisions and their reasons, where things live, what the team prefers. `npx --no-install foreman memory list` shows them all on one screen.
 - Blocked on people (files, decisions, accounts)? Do what you can, leave clear placeholders, and comment on the issue with exactly what's needed, in plain language. Don't invent content.
 - Check the open PRs (`gh pr list`) for work touching the same files.
 
@@ -24,7 +24,7 @@ git fetch origin && git rebase origin/<base>     # the base branch in foreman.co
 ## Before the PR
 - Run the repo's `verifyCommand` (in `foreman.config.json`) and whatever the playbooks add.
 - Don't edit the plan file (`planFile`): parallel agents would conflict. Collect changes for the PR's "Plan updates" section.
-- **Never edit the memory folder** (`memory/`). Only the Coordinator does, in its own memory PRs, and it won't approve a PR of yours that touches it (the folder is a risky path, so it shows). Collect what future agents should know for the PR's "Memory updates" section instead. Your agent tool's own memory (Claude Code's per-user memory folder, say) is fine for you, but no one else can read it: what the next agent needs goes in the PR.
+- **Never edit the memory folder.** Only the Coordinator does, in its own memory PRs, and it won't approve a PR of yours that touches it (the folder is a risky path, so it shows). Collect what future agents should know for the PR's "Memory updates" section instead. Your agent tool's own memory (Claude Code's per-user memory folder, say) is fine for you, but no one else can read it: what the next agent needs goes in the PR.
 - `git fetch origin && git rebase origin/<base>` (then `npm install` if `package-lock.json` changed), and verify again.
 
 ## PR
@@ -39,7 +39,14 @@ PR body:
 - What's left, and anything needing people.
 - Edits to shared hotspots.
 - **Plan updates**: done items, new decisions and findings, written so the Coordinator can paste them in.
-- **Memory updates**: durable facts a future agent would need and couldn't easily see from the code, one line each: a gotcha that cost time, a decision and its reason, where something lives, what the team asked for. Mark each one **new**, **correct `<slug>`** (a note that's now wrong, and what's true instead) or **delete `<slug>`** (a note that no longer holds). Nothing private (secrets, where keys live). Write "none" if there's nothing. Use a `## Memory updates` heading: the Coordinator collects these with `npx --no-install foreman memory updates`.
+- A **`## Memory updates`** heading (always this form; the Coordinator collects these with `npx --no-install foreman memory updates`): durable facts a future agent would need and couldn't easily see from the code, one bullet each. A gotcha that cost time, a decision and its reason, where something lives, what the team asked for. Nothing private (secrets, where keys live). Put it before `Closes #N`, or after it under its own heading. For example:
+  ```md
+  ## Memory updates
+  - **new** Deploys need a warm page cache, or the first visitors wait 20 seconds.
+  - **correct `ports`** Builders' ports now start at 56000, not 55000.
+  - **delete `old-ci`** The Travis setup is gone.
+  ```
+  Or `none` if there's nothing.
 
 Watch the checks (`gh pr checks --watch`) and fix any failure. Checks that stay **queued** are waiting for a runner, not failing: don't re-push. Then report back and **wait for the Coordinator's review**.
 

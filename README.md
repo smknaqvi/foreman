@@ -84,7 +84,7 @@ sequenceDiagram
     C->>F: memory updates
     F->>G: merged PRs, and what memory PRs applied
     F-->>C: "Memory updates" no memory PR has applied
-    C->>G: memory PR: "Applies memory updates from #35;12"<br/>(same review, approval and merge)
+    C->>G: memory PR: "Memory PR: applies memory updates from #35;12"<br/>(same review, approval and merge)
     G->>M: merged: notes added, corrected, removed
 ```
 
@@ -163,7 +163,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `verifyCommand` | What a Builder runs before saying it's done |
 | `docsOnly` | Regex: PRs that only change matching files don't wait for checks (`\.md$`) |
 | `staleCheckPaths` | When these change on the base (e.g. screenshot baselines), a rebased PR waits for its own checks |
-| `riskyPaths` | Get the stricter review. `.github/`, `.claude/`, `.githooks/`, the config and `package*.json` are always included, and the [shared memory](#shared-memory)'s folder while it's on |
+| `riskyPaths` | Get the stricter review. `.github/`, `.claude/`, `.githooks/`, the config and `package*.json` are always included, and the [shared memory](#shared-memory)'s folder once it's set up |
 | `hotspots` | Files several Builders would want. The Coordinator serializes work on them |
 | `playbooks` | Your project's skills or docs that every Builder reads |
 | `memory` | `dir`: the [shared memory](#shared-memory)'s folder, relative to the config (`memory`; empty switches it off) |
@@ -250,12 +250,13 @@ where the cache was already warm. See [[deploy-steps]].
 - `updated` (optional) is when someone last checked it's true. `source` (optional) is where it came from. Quote a value with `#` or `: ` in it.
 - Notes link to each other with `[[other-slug]]`.
 - Each index line is `- [Deploy cache](deploy-cache.md) — warm the cache after every deploy`.
+- A Builder's PR proposes changes under a `## Memory updates` heading, one bullet each: `- **new** …`, ``- **correct `slug`** …``, ``- **delete `slug`** …``, or `none`.
 
 **Only the Coordinator writes it,** and review is what keeps it that way, as with the plan file.
 - Builders never edit `memory/`. Their PR has a "Memory updates" section instead: new facts, corrections to a note (by its name), notes to delete, or "none".
-- The folder is always a risky path while memory is on, so `foreman status` marks any PR touching it RISKY and it gets the stricter review. The Coordinator turns away a Builder's PR that changes it and asks for a "Memory updates" section instead. `foreman merge` doesn't check this.
-- After merges, the Coordinator runs `foreman memory updates`. It prints the sections of merged PRs that no memory PR has applied yet. The Coordinator applies them in its own small memory PR (a branch like `foreman/memory-<date>`; it can be the same PR as the plan updates), whose description says which PRs it handled: "Applies memory updates from #12, #40". That line takes them off the list, but only in a PR that really changed `memory/`; a note's `source: "PR #12"` on the base counts too. So a PR that merged while the memory PR was open isn't lost. The window starts when `memory/MEMORY.md` was added to the base (by commit history, not clocks), or at `--since`.
-- The memory PR goes through the usual review, approval and merge. It only changes Markdown, so `foreman merge` won't wait for checks: the Coordinator runs `foreman memory check` before approving, and the CI check `init --ci` writes runs it too.
+- Once the memory is set up (its index is there), the folder is always a risky path, so `foreman status` marks any PR touching it RISKY and it gets the stricter review; before that, a PR adding the index is. The Coordinator turns away a Builder's PR that changes it and asks for a "Memory updates" section instead. `foreman merge` doesn't check who changed it.
+- After merges, the Coordinator runs `foreman memory updates`. It prints the sections of merged PRs that no memory PR has applied yet. The Coordinator applies them in its own small memory PR (a branch like `foreman/memory-<date>`; it can be the same PR as the plan updates), whose description says which PRs it handled: "Memory PR: applies memory updates from #12, #40". That line takes them off the list whatever the PR changed, so declining them all only needs the line in some small Coordinator PR (or `foreman memory updates --since <date>` to look past them). A note's `source: "PR #12"` on the base counts too. So a PR that merged while the memory PR was open isn't lost. The window starts when `memory/MEMORY.md` was added to the base (by commit history, not clocks), or at `--since`.
+- The memory PR goes through the usual review, approval and merge. It only changes Markdown, so `foreman merge` won't wait for CI on it, but it runs `foreman memory check` (errors only, locally, on the PR's own notes) on any PR that changes the memory folder, and refuses if a note is broken. The CI check `init --ci` writes runs it too.
 - `foreman status` shows how many notes there are, and any errors.
 
 **The memory review.** A wrong note is worse than none: every agent trusts it. At the end of each wave, and at least weekly, the Coordinator reads every note (`foreman memory list`, then the files), looking for:
@@ -340,8 +341,9 @@ It's **read-only** on purpose: approving means reviewing, which is the Coordinat
 1. **Approval is bound to a commit.** `approve` writes a commit status on the reviewed sha, and only if the PR is still at that sha. Anything pushed later is unapproved.
 2. **A clean rebase keeps the approval.** `merge --rebased-from <approved sha>` replays the approved commit onto the current base (`git merge-tree`). It accepts the PR only if that gives exactly the PR's files. Then it copies the approval onto the new head. A rebase that needed conflict fixes, or slipped in a change, goes back for review.
 3. **Up to date and green.** The PR must contain the current base. The required check must have actually passed: on the head, or on the approved commit for a clean rebase, unless a `staleCheckPaths` path changed since. No check may have failed on the head.
-4. **One at a time.** A lock shared by every worktree on the machine serializes merges.
-5. **No way around it.**
+4. **Memory notes that parse.** A PR that changes the [shared memory](#shared-memory) folder merges only if `foreman memory check` finds no errors in its notes (docs-only or not). Who may change it is left to review.
+5. **One at a time.** A lock shared by every worktree on the machine serializes merges.
+6. **No way around it.**
    - The guard hook reads each shell command the way bash would. That includes quoting, heredocs, `$(...)`, `bash -c`, `eval`, `xargs`, `env`, `cd` and branch switches.
    - It blocks `gh pr merge`, merge and ref-writing API calls (REST and GraphQL), pushes to the base branch, `--no-verify`, switching off `core.hooksPath`, and writing the approval status by hand.
    - Git's pre-push check catches pushes to the base however they're typed.
@@ -355,7 +357,9 @@ flowchart TD
     open -- no --> r1["Refuse"]
     open -- yes --> uptodate{"Contains the<br/>current main?"}
     uptodate -- no --> r2["Refuse: rebase and retry"]
-    uptodate -- yes --> head{"Approved at<br/>the head?"}
+    uptodate -- yes --> notes{"Changes the memory folder?<br/>Then do its notes pass<br/>foreman memory check?"}
+    notes -- "notes broken" --> r7["Refuse: fix the notes"]
+    notes -- "no memory change,<br/>or they pass" --> head{"Approved at<br/>the head?"}
     head -- yes --> trusthead["Trust the head's checks"]
     head -- no --> rebased{"Approved at the<br/>--rebased-from sha?"}
     rebased -- no --> r3["Refuse: needs review"]
@@ -373,7 +377,7 @@ flowchart TD
 
     classDef refuse fill:#fdecec,stroke:#c43c3c,color:#4a1212
     classDef ok fill:#e8f6ec,stroke:#2f8f4e,color:#123a1f
-    class r1,r2,r3,r4,r5,r6 refuse
+    class r1,r2,r3,r4,r5,r6,r7 refuse
     class merge ok
 ```
 
