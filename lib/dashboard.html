@@ -76,6 +76,7 @@
 	<div class="col">
 		<section class="card"><h2>Live</h2><ul class="feed" id="feed"><li class="empty"><span></span><span>Nothing yet. Rounds run every minute or so.</span></li></ul></section>
 		<section class="card"><h2>Agents</h2><div id="agents"></div></section>
+		<section class="card"><h2>Last 30 days</h2><div id="stats"></div></section>
 		<section class="card" id="env-card" hidden><h2>Environments</h2><div id="envs"></div></section>
 	</div>
 </main>
@@ -167,6 +168,19 @@ function render(s) {
 		el('span', { class: 'muted', text: 'Observer' }), el('span', { text: a.observerAt && Date.now() - a.observerAt < 3600e3 ? `last round ${ago(a.observerAt)}` : 'not running' }),
 		el('span', { class: 'muted', text: 'Notifications' }), el('span', { text: s.notify?.length ? s.notify.join(', ') : 'none (foreman notify add …)' })),
 		...(s.watchdog ? [el('div', { style: 'margin-top: 10px' }, el('div', { class: 'muted small', text: 'Watchdog' }), el('pre', { text: s.watchdog.replace(/^ {2}/gm, '') }))] : []));
+
+	// foreman stats' summary (counted hourly in the background; null until the first count is done).
+	const st = s.stats;
+	const dur = (ms) => ms === null || ms === undefined ? '–' : ms < 3600e3 ? `${Math.round(ms / 60000)} min` : ms < 48 * 3600e3 ? `${(ms / 3600e3).toFixed(1)} h` : `${(ms / 86400e3).toFixed(1)} d`;
+	const nums = (list) => list.length ? ` (${list.slice(0, 4).map((x) => `#${x.number ?? x}`).join(', ')}${list.length > 4 ? '…' : ''})` : '';
+	$('stats').replaceChildren(!st ? el('div', { class: 'empty', text: 'Counting… (foreman stats)' }) : st.error ? el('div', { class: 'error small', text: `couldn't count: ${st.error}` }) : el('div', { class: 'kv' },
+		el('span', { class: 'muted', text: 'PRs merged' }), el('span', { text: st.merged }),
+		el('span', { class: 'muted', text: 'Review rounds' }), el('span', { text: st.medianRounds ?? '–', title: 'median per PR; approvals carried over a rebase not counted' }),
+		el('span', { class: 'muted', text: 'Opened → merged' }), el('span', { text: dur(st.medianOpenToMergeMs), title: 'median' }),
+		el('span', { class: 'muted', text: 'Flake rate' }), el('span', { text: st.flakeRate === null ? '–' : `${(100 * st.flakeRate).toFixed(1)}% of ${st.checkRuns} runs` }),
+		el('span', { class: 'muted', text: 'Turned base red' }), st.turnedMainRed.length ? pill('critical', '✕', `${st.turnedMainRed.length}${nums(st.turnedMainRed)}`) : el('span', { text: '0' }),
+		el('span', { class: 'muted', text: 'Open > 7 days' }), el('span', { text: `${st.openOlderThan7Days.length}${nums(st.openOlderThan7Days)}` }),
+		el('span', { class: 'muted', text: 'Claimed, no PR > 2 days' }), el('span', { text: `${st.claimedWithoutPr.length}${nums(st.claimedWithoutPr)}` })));
 
 	$('env-card').hidden = s.environments === null;
 	if (s.environments !== null) {

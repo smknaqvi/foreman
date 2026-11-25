@@ -17,6 +17,10 @@ Coordinator
   approve <PR> <reviewed sha>             approve exactly the commit you reviewed
   observe [--once]                        print a line whenever something needs attention (run under Monitor)
   dashboard [--port <p>] [--open]         the crew in a browser, live (read-only; 127.0.0.1:4477)
+  stats [--since <date|Nd>] [--until <date>] [--json] [--pr <N>]
+                                          how the crew is doing, from GitHub's history (default: the last 30
+                                          days): review rounds, time to merge, check failures and flakes,
+                                          merges that turned the base red; --pr: one PR's timeline
   tick [--dry-run]                        what needs no judgement: merge approved, green PRs (clean rebases
                                           only) and remove orphaned environments
 
@@ -135,6 +139,10 @@ async function main() {
 				return 2;
 			}
 			return (await import('../lib/memory.mjs')).command(config, positionals, values);
+		}
+		case 'stats': {
+			const { values } = flags({ since: { type: 'string' }, until: { type: 'string' }, json: { type: 'boolean' }, pr: { type: 'string' } });
+			return (await import('../lib/stats.mjs')).stats(loadConfig(), values);
 		}
 		case 'dashboard': {
 			const { values } = flags({ port: { type: 'string' }, open: { type: 'boolean' } });

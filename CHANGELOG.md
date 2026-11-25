@@ -2,6 +2,10 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
+## Unreleased
+- **`foreman stats [--since <date|Nd>] [--until <date>] [--json] [--pr <N>]`**: how the crew is doing, counted from GitHub's history (no AI, read-only), for the PRs merged into the base in a window (the last 30 days by default). Per PR: review rounds (fresh approvals; approvals carried over a clean rebase are counted apart), pushes after it opened, time from claim to opened to first approval to merged, runs of the required check with failures and flakes (failed, then passed on the same commit with no new push), whether the base's check failed on its merge commit, reverts, labels for people, and whether it merged with an approval on its last commit. Then a summary (medians, flake rate, merges that turned the base red, open PRs older than 7 days, claimed issues with no PR for over 2 days) and "worth a look" lines. `--json` gives all of it; `--pr` one PR's timeline. Compare windows before and after a playbook change to see whether it helped. See the README's "Stats".
+- **`foreman dashboard`** shows the same summary in a "Last 30 days" panel, recounted hourly in the background.
+
 ## 0.4.0 (2026-11-25)
 - **Antigravity.** `foreman init --agents antigravity` wires the merge guard into its `.agents/hooks.json` (its `run_command` tool; Antigravity's CLI, IDE and app) and links every playbook into `.agents/skills/`, where it looks for skills. The guard answers it `allow` for fine commands (its hooks must answer; that leaves the call to its own approval rules) and `deny` with the reason otherwise.
 - **Shared memory: durable facts every agent reads, in the repo.** Gotchas, decisions and their reasons, where things live, what the team prefers: one fact per note in `memory/<slug>.md`, indexed in `memory/MEMORY.md`, in Claude Code's memory format (its nested `metadata:`, to any depth, and a plain `type` are both read), so every tool on every machine starts from the same facts. Setting: `memory.dir` (`memory`, relative to the config; empty switches it off).

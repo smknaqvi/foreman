@@ -3,12 +3,14 @@
  * A stand-in for the GitHub CLI, for test/merge.test.mjs (and the merged-PR list `foreman memory updates`
  * reads, test/memory.test.mjs). It answers exactly the calls scripts/merge.sh makes, from a JSON state file
  * ($FAKE_GH_STATE) the test controls, and records approvals and merges there. `pr list` returns `mergedPrs`
- * and records the call in `calls`.
+ * and records the call in `calls`. `api graphql` answers `foreman stats` (test/stats.test.mjs) from `stats`,
+ * logging each query to <state file>.calls:
  *   { repo, pr: { number, state, isDraft, head, mergeable, branch? }, approved: [sha], verify: { sha: conclusion },
- *     failed: { sha: "names" }, checksPass, merged, origin? }
+ *     failed: { sha: "names" }, checksPass, merged, origin?,
+ *     stats?: { prs: [PR as GitHub's GraphQL gives it], history: [commit], open: [PR], claimed: [issue], pageSize? } }
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 
 const file = process.env.FAKE_GH_STATE;
 const s = JSON.parse(readFileSync(file, 'utf8'));
@@ -21,7 +23,8 @@ const save = () => writeFileSync(file, JSON.stringify(s));
 const out = (x) => process.stdout.write(`${x}\n`);
 const [a, b] = args;
 
-if (a === 'repo' && b === 'view') out(s.repo);
+if (a === 'repo' && b === 'view') out(args.includes('owner,name') ? JSON.stringify({ owner: { login: s.repo.split('/')[0] }, name: s.repo.split('/')[1] }) : s.repo);
+else if (a === 'api' && b === 'graphql') out(JSON.stringify({ data: graphql() }));
 else if (a === 'api') {
 	const ep = args.slice(1).find((x) => x.startsWith('repos/'));
 	let m;
@@ -50,4 +53,31 @@ else if (a === 'pr' && b === 'merge') {
 } else {
 	process.stderr.write(`fake gh: unexpected call ${args.join(' ')}\n`);
 	process.exit(2);
+}
+
+/** The GraphQL queries `foreman stats` makes, answered from `s.stats`, keyed on what each query asks for. */
+function graphql() {
+	const query = args.find((x) => x.startsWith('query=')).slice(6);
+	const v = Object.fromEntries(args.filter((x, i) => ['-f', '-F'].includes(args[i - 1]) && !x.startsWith('query=')).map((x) => [x.slice(0, x.indexOf('=')), x.slice(x.indexOf('=') + 1)]));
+	const st = s.stats ?? {};
+	// stats makes these in parallel: each call is one appended line, never a rewrite of the state file.
+	appendFileSync(`${file}.calls`, `${query.includes('search(') ? `search ${v.q}` : query.slice(0, 80).replace(/\s+/g, ' ')}\n`);
+	if (query.includes('search(')) { // Only the PRs merged in the query's range, a page at a time.
+		const [, from, to] = v.q.match(/merged:(\S+)\.\.(\S+)/);
+		const hits = (st.prs ?? []).filter((p) => Date.parse(p.mergedAt) >= Date.parse(from) && Date.parse(p.mergedAt) <= Date.parse(to));
+		const size = st.pageSize ?? 100, start = Number(v.after ?? 0);
+		const page = hits.slice(start, start + size);
+		return { search: { issueCount: hits.length, pageInfo: { hasNextPage: start + size < hits.length, endCursor: String(start + size) }, nodes: page.map((p) => ({ number: p.number })) } };
+	}
+	const repository = {};
+	for (const [, alias, n] of query.matchAll(/(p(\d+)):pullRequest\(number:\d+\)/g)) repository[alias] = (st.prs ?? []).concat(st.open ?? []).find((p) => p.number === Number(n)) ?? null;
+	if (query.includes(':object(oid:')) { // Every commit the PRs mention, full.
+		const all = new Map();
+		const walk = (x) => { if (x && typeof x === 'object') { if (x.oid && (x.status !== undefined || x.checkSuites)) all.set(x.oid, x); Object.values(x).forEach(walk); } };
+		walk(st.prs);
+		for (const [, alias, oid] of query.matchAll(/(c\d+):object\(oid:"(\w+)"\)/g)) repository[alias] = all.get(oid) ?? null;
+	}
+	if (query.includes('history(')) repository.ref = { target: { history: { pageInfo: { hasNextPage: false }, nodes: (st.history ?? []).filter((c) => c.committedDate >= v.since && c.committedDate <= v.until) } } };
+	if (query.includes('openPrs:')) { repository.openPrs = { nodes: st.open ?? [] }; repository.claimed = { nodes: st.claimed ?? [] }; }
+	return { repository };
 }
