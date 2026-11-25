@@ -277,3 +277,15 @@ test('init: a .agents/ folder alone (Codex skills) is not an Antigravity repo; a
 	cli(dir, 'init', '--agents', 'claude,antigravity');
 	assert.match(readFileSync(join(dir, '.claude/hooks/foreman-guard.mjs'), 'utf8'), /foreman-shim: 2/, 'replaced without --force');
 });
+
+test('the pre-push check is judged by its exit status, even when it never reads its input (#32)', async () => {
+	const { hookRefuses } = await import('../lib/selftest.mjs');
+	const dir = repo();
+	const hook = join(dir, 'pre-push');
+	// Lets everything through without reading stdin: writing the push line can fail (EPIPE), which must not count.
+	writeFileSync(hook, '#!/usr/bin/env bash\nexit 0\n');
+	for (let i = 0; i < 25; i++) assert.equal(hookRefuses(hook, 'main', { cwd: dir, env: process.env }), false, `run ${i}`);
+	// Refuses without reading stdin: still a refusal.
+	writeFileSync(hook, '#!/usr/bin/env bash\nexit 1\n');
+	for (let i = 0; i < 5; i++) assert.equal(hookRefuses(hook, 'main', { cwd: dir, env: process.env }), true);
+});
