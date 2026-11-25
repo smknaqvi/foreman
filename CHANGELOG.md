@@ -2,7 +2,7 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
-## Unreleased
+## 0.4.0 (2026-11-25)
 - **Antigravity.** `foreman init --agents antigravity` wires the merge guard into its `.agents/hooks.json` (its `run_command` tool; Antigravity's CLI, IDE and app) and links every playbook into `.agents/skills/`, where it looks for skills. The guard answers it `allow` for fine commands (its hooks must answer; that leaves the call to its own approval rules) and `deny` with the reason otherwise.
 - **Shared memory: durable facts every agent reads, in the repo.** Gotchas, decisions and their reasons, where things live, what the team prefers: one fact per note in `memory/<slug>.md`, indexed in `memory/MEMORY.md`, in Claude Code's memory format (its nested `metadata:`, to any depth, and a plain `type` are both read), so every tool on every machine starts from the same facts. Setting: `memory.dir` (`memory`, relative to the config; empty switches it off).
   - **Only the Coordinator writes it, kept by review** like the plan file. Once it's set up, the folder is always a risky path, so `foreman status` marks any PR touching it and the Coordinator turns away a Builder's. Builders put what future agents should know in their PR's `## Memory updates` section instead. `foreman merge` doesn't check who changed it, but once the memory is set up on the base it runs `foreman memory check` on any PR that changes the folder (memory PRs are Markdown-only, so they skip CI) and refuses broken notes; the folder comes from the base's config, so a PR can't switch the check off.
