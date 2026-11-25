@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { median, parseWindow, revertedPr } from '../lib/stats.mjs';
+import { median, parseWindow, revertedPr, summaryRows } from '../lib/stats.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const temps = [];
@@ -29,16 +29,17 @@ const sha = (x) => x.repeat(40).slice(0, 40); // 'a1' → a full, hex commit id.
 
 const run = (conclusion, start, minutes = 10) => ({ name: 'verify', status: 'COMPLETED', conclusion, startedAt: at(start), completedAt: at(start + minutes / 60) });
 const approval = (h, carried = false) => ({ context: 'coordinator-review', state: 'SUCCESS', description: carried ? 'Approval carried over: clean rebase of 1111111' : 'Approved after review', createdAt: at(h), creator: { login: 'coord' } });
-const commit = (id, committed, { runs = [], statuses = [] } = {}) => ({
+// suites: [[event, runs]]; `runs` alone is one pull_request suite. Every commit also has an app's empty suite.
+const commit = (id, committed, { runs = [], suites = runs.length ? [['pull_request', runs]] : [], statuses = [] } = {}) => ({
 	oid: sha(id), committedDate: at(committed), status: statuses.length ? { contexts: statuses } : null,
-	checkSuites: { nodes: runs.length ? [{ workflowRun: { event: 'pull_request' }, checkRuns: { nodes: runs } }] : [] },
+	checkSuites: { nodes: [{ id: `${id}-app`, workflowRun: null, checkRuns: { nodes: [] } }, ...suites.map(([event, list], i) => ({ id: `${id}-${i}`, workflowRun: { event }, checkRuns: { nodes: list } }))] },
 });
 const labeled = (name, h) => ({ __typename: 'LabeledEvent', createdAt: at(h), label: { name } });
-function pr(number, { created, merged, commits = [], forced = [], labels = [], issue = null, head, mergeCommit, parent }) {
+function pr(number, { created, merged, commits = [], forced = [], labels = [], issue = null, head, mergeCommit }) {
 	return {
 		number, title: `PR ${number}`, url: `https://github.com/o/r/pull/${number}`, state: 'MERGED', isDraft: false,
 		createdAt: at(created), mergedAt: at(merged), baseRefName: 'main', headRefOid: head.oid, author: { login: 'builder' }, mergedBy: { login: 'builder' },
-		mergeCommit: { ...mergeCommit, parents: { nodes: [parent] } },
+		mergeCommit,
 		commits: { nodes: [{ commit: head }] },
 		closingIssuesReferences: { nodes: issue ? [issue] : [] },
 		timelineItems: {
@@ -59,27 +60,32 @@ const b2 = commit('b2', 2, { runs: [run('FAILURE', 2.1), run('SUCCESS', 2.5)], s
 const c3 = commit('c3', 3.9, { statuses: [approval(4.2, true)] });
 const main0 = commit('d0', -5, { runs: [run('SUCCESS', -5)] });
 const main1 = commit('d1', 4.3, { runs: [run('SUCCESS', 4.4)] });
-const issue1 = { number: 11, title: 'Issue 11', timelineItems: { nodes: [labeled('agent: working', -1), { __typename: 'IssueComment', createdAt: at(-0.99), body: 'Builder launched: branch `b`, port 1.' }] } };
-const pr1 = pr(1, { created: 0, merged: 4.3, commits: [a1, b2], forced: [[b2, c3, 4]], issue: issue1, head: c3, mergeCommit: main1, parent: main0 });
+// Claimed long before, again just before the PR opened (the claim that counts), and again after it opened.
+const launched = (h) => ({ __typename: 'IssueComment', createdAt: at(h), body: 'Builder launched: branch `b`, port 1.' });
+const issue1 = { number: 11, title: 'Issue 11', timelineItems: { nodes: [labeled('agent: working', -50), labeled('agent: working', -1), launched(-0.99), labeled('agent: working', 10)] } };
+const pr1 = pr(1, { created: 0, merged: 4.3, commits: [a1, b2], forced: [[b2, c3, 4]], issue: issue1, head: c3, mergeCommit: main1 });
 
-// #2: one round, labeled for people, and the base's check failed on its merge commit after passing before it.
+// #2: one round, labeled for people, and the base's check failed on its merge commit. The commit before it only
+// has a cancelled run; the one before that passed: it turned the base red.
 const e4 = commit('e4', 4.9, { runs: [run('SUCCESS', 5.1)], statuses: [approval(5.5)] });
+const mid = commit('d9', 5.8, { runs: [run('CANCELLED', 5.85)] });
 const main2 = commit('d2', 6, { runs: [run('FAILURE', 6.1)] });
-const pr2 = pr(2, { created: 5, merged: 6, commits: [e4], labels: [labeled('needs team input', 5.2)], head: e4, mergeCommit: main2, parent: main1 });
+const pr2 = pr(2, { created: 5, merged: 6, commits: [e4], labels: [labeled('needs team input', 5.2)], head: e4, mergeCommit: main2 });
 
 // #3: merged without an approval, onto a base that was already red: red after merging, but it didn't turn it red.
 const f5 = commit('f5', 6.4, { runs: [run('SUCCESS', 6.6)] });
 const main3 = commit('d3', 7, { runs: [run('FAILURE', 7.1)] });
-const pr3 = pr(3, { created: 6.5, merged: 7, commits: [f5], head: f5, mergeCommit: main3, parent: main2 });
+const pr3 = pr(3, { created: 6.5, merged: 7, commits: [f5], head: f5, mergeCommit: main3 });
 
 // #4: merged long before the default window.
 const g6 = commit('a6', -500, { statuses: [approval(-499)] });
-const pr4 = pr(4, { created: -500, merged: -499, commits: [g6], head: g6, mergeCommit: commit('d4', -499), parent: commit('d5', -501) });
+const pr4 = pr(4, { created: -500, merged: -499, commits: [g6], head: g6, mergeCommit: commit('d4', -499) });
 
 const STATE = {
 	repo: 'o/r', pr: {}, approved: [], verify: {}, failed: {},
 	stats: {
 		prs: [pr1, pr2, pr3, pr4],
+		mainChain: [main3, main2, mid, main1, main0],
 		history: [
 			{ oid: sha('d2'), messageHeadline: 'PR 2 (#2)', committedDate: at(6), associatedPullRequests: { nodes: [{ number: 2 }] } },
 			{ oid: sha('e7'), messageHeadline: 'Revert "PR 2 (#2)" (#5)', committedDate: at(8), associatedPullRequests: { nodes: [{ number: 5 }] } },
@@ -135,19 +141,34 @@ test('stats: a check that failed, then passed on the same commit with no new pus
 	// A failure fixed by a new commit is not a flake.
 	const fixed = structuredClone(STATE);
 	const c = fixed.stats.prs[0].timelineItems.nodes[1].commit;
-	c.checkSuites.nodes[0].checkRuns.nodes = [run('FAILURE', 2.1)];
+	c.checkSuites.nodes[1].checkRuns.nodes = [run('FAILURE', 2.1)];
+	fixed.stats.prs[0].timelineItems.nodes[2].beforeCommit = c; // The same commit, as the force-push's before.
 	fixed.stats.prs[0].timelineItems.nodes.push({ __typename: 'PullRequestCommit', commit: commit('b9', 2.4, { runs: [run('SUCCESS', 2.5)] }) });
 	assert.equal(json([], fixed).prs[0].checks.flakes, 0);
+	// Nor is a pull_request run failing and a push run (another suite) passing on the same commit.
+	const twoEvents = structuredClone(STATE);
+	twoEvents.stats.prs[0].timelineItems.nodes[1].commit = commit('b2', 2, { suites: [['pull_request', [run('FAILURE', 2.1)]], ['push', [run('SUCCESS', 2.2)]]], statuses: [approval(3)] });
+	twoEvents.stats.prs[0].timelineItems.nodes[2].beforeCommit = twoEvents.stats.prs[0].timelineItems.nodes[1].commit;
+	const te = json([], twoEvents).prs[0].checks;
+	assert.equal(te.flakes, 0);
+	assert.equal(te.failed, 1);
 });
 
 test('stats: a merge whose base check failed after passing before it turned the base red; one onto a red base didn\'t', () => {
 	const r = json([]);
-	assert.deepEqual(r.prs[1].afterMerge, { sha: sha('d2'), result: 'failed', flaky: false, before: 'passed', turnedRed: true });
-	assert.equal(r.prs[2].afterMerge.turnedRed, false);
-	assert.equal(r.prs[2].afterMerge.before, 'failed');
+	assert.deepEqual(r.prs[1].afterMerge, { sha: sha('d2'), result: 'failed', flaky: false, before: 'passed', beforeSha: sha('d1'), turnedRed: true, alreadyRed: false }, 'the cancelled run just before it is skipped');
+	assert.deepEqual(r.prs[2].afterMerge, { sha: sha('d3'), result: 'failed', flaky: false, before: 'failed', beforeSha: sha('d2'), turnedRed: false, alreadyRed: true });
 	assert.deepEqual(r.summary.turnedMainRed, [2]);
+	assert.deepEqual(r.summary.alreadyRed, [3]);
 	assert.deepEqual(r.summary.redAfterMerge, [2, 3]);
-	assert.equal(r.prs[0].afterMerge.result, 'passed');
+	assert.deepEqual(r.prs[0].afterMerge, { sha: sha('d1'), result: 'passed', flaky: false, before: null, beforeSha: null, turnedRed: false, alreadyRed: false });
+	// No decided check anywhere before it: can't tell, so it isn't counted as turning the base red.
+	const lone = structuredClone(STATE);
+	lone.stats.mainChain = [main3, mid];
+	const l = json([], lone);
+	assert.equal(l.prs[2].afterMerge.before, 'unknown');
+	assert.equal(l.prs[2].afterMerge.turnedRed, false);
+	assert.deepEqual(l.summary.redUnknownBefore, [2, 3]);
 	// Reverts and commits without a PR, from the base branch's history.
 	assert.equal(r.summary.reverts, 1);
 	assert.equal(r.prs[1].revertedBy, '#5');
@@ -158,7 +179,7 @@ test('stats: a merge whose base check failed after passing before it turned the 
 test('stats: times from claim to merge, and their medians', () => {
 	const r = json([]);
 	const t = r.prs[0].times;
-	assert.equal(r.prs[0].claimedAt, at(-0.99).replace('.000Z', 'Z'), 'the last claim before the PR opened');
+	assert.equal(r.prs[0].claimedAt, at(-0.99).replace('.000Z', 'Z'), 'the nearest claim before the PR opened, not the first or a later one');
 	assert.equal(t.claimToOpenMs, hours(0.99));
 	assert.equal(t.openToApprovalMs, hours(1), 'to the first fresh approval');
 	assert.equal(t.approvalToMergeMs, hours(4.3) - hours(1));
@@ -209,7 +230,7 @@ test('stats: the human summary, table and worth-a-look lines', () => {
 	assert.match(r.out, /3 PRs merged\. The typical one \(median\): 1 review round, 0 pushes after it opened, 1\.0 h from opened to merged/);
 	assert.match(r.out, /1 approval carried over a clean rebase \(not counted as rounds\)/);
 	assert.match(r.out, /Checks \("verify"\): 5 runs, 1 failed; 1 flake .*20\.0% of runs\)/);
-	assert.match(r.out, /1 merge turned main red \(#2\); 1 more landed on an already red main\. 1 revert\./);
+	assert.match(r.out, /1 merge turned main red \(#2\); 1 more landed on main that was already red \(#3\)\. 1 revert\./);
 	assert.match(r.out, /1 PR merged without an approval on the last commit, so not through foreman merge \(#3\)/);
 	assert.match(r.out, /Now: 1 open PR older than 7 days \(#20\); 1 claimed issue with no PR for over 2 days \(#30\)\./);
 	assert.match(r.out, /\n {2}#1 +PR 1 +2 +2 +4\.3 h +1 +1 flake; 1 carried over\n/);
@@ -251,7 +272,11 @@ test('stats --pr: one PR\'s timeline', () => {
 	}
 	assert.match(r.out, /Review rounds 2 \(\+1 carried over a rebase\) · 2 pushes after opening \(1 force-push\) · verify: 3 runs, 1 failed, 1 flake/);
 	assert.equal(json(['--pr', '2']).afterMerge.turnedRed, true);
+	assert.match(stats(['--pr', '2']).out, /main after the merge: failed \(turned it red: it passed on d1d1d1d before\)/);
 	assert.match(stats(['--pr', 'x']).out, /--pr takes a PR number/);
+	const missing = stats(['--pr', '99']);
+	assert.equal(missing.code, 1);
+	assert.match(missing.out, /no PR #99 in o\/r/);
 });
 
 test('stats: medians and revert titles', () => {
@@ -262,4 +287,31 @@ test('stats: medians and revert titles', () => {
 	assert.equal(revertedPr('Revert "Fix the header (#12)" (#14)'), 12);
 	assert.equal(revertedPr('Revert "Fix the header"'), null);
 	assert.equal(revertedPr('Fix (#12)'), null);
+});
+
+test('stats: a PR number that doesn\'t resolve doesn\'t fail the rest of its batch', () => {
+	const ghost = structuredClone(STATE);
+	ghost.stats.searchExtra = [77];
+	assert.deepEqual(json([], ghost).prs.map((p) => p.number), [1, 2, 3]);
+});
+
+test('stats: suites, runs and issue timelines are paged to the end, giving the same numbers', () => {
+	const paged = structuredClone(STATE);
+	Object.assign(paged.stats, { suitePage: 1, runPage: 1, issuePage: 1 });
+	const r = stats(['--json'], paged);
+	const strip = (x) => ({ ...x, generatedAt: '', window: '' });
+	assert.deepEqual(strip(JSON.parse(r.out)), strip(json([])));
+	assert.ok(r.calls.some((c) => c.startsWith('query{s0:node')), 'more runs of a suite');
+	assert.ok(r.calls.some((c) => /checkSuites\(first:10,after:/.test(c)), 'more suites of a commit');
+	assert.ok(r.calls.some((c) => c.includes('issue(number:$n)')), 'earlier issue timeline');
+});
+
+test('stats: the dashboard gets the summary as formatted rows', () => {
+	const rows = summaryRows(json([]).summary);
+	const row = (label) => rows.find((x) => x.label === label);
+	assert.equal(row('PRs merged').value, '3');
+	assert.equal(row('Opened → merged').value, '1.0 h');
+	assert.equal(row('Flake rate').value, '20.0% of 5 runs');
+	assert.deepEqual(row('Turned base red'), { label: 'Turned base red', value: '1 (#2)', attention: true });
+	assert.equal(row('Claimed, no PR > 2 days').value, '1 (#30)');
 });
