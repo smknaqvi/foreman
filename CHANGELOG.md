@@ -2,7 +2,8 @@
 
 Versions are git tags (`v*`). They're permanent: a ruleset stops them being moved or deleted, so a pinned version always means the same code.
 
-## Unreleased
+## 0.5.0 (2026-11-25)
+- **`guard --self-test` and `doctor` judge git's pre-push check by its exit status** (#32): a hook that let everything through but exited without reading its input could pass as refusing, now and then.
 - **`foreman stats [--since <date|Nd>] [--until <date>] [--json] [--pr <N>]`**: how the crew is doing, counted from GitHub's history (no AI, read-only), for the PRs merged into the base in a window (the last 30 days by default). Per PR: review rounds (fresh approvals; approvals carried over a clean rebase are counted apart), pushes after it opened, time from claim to opened to first approval to merged, runs of the required check with failures and flakes (failed, then passed on a re-run of the same check suite), whether its merge turned the base red (its check failed on the merge commit and passed on the nearest earlier base commit whose check finished) or landed on a base that was already red, reverts, labels for people, and whether it merged with an approval on its last commit. Then a summary (medians, flake rate, merges that turned the base red, open PRs older than 7 days, claimed issues with no PR for over 2 days) and "worth a look" lines. `--json` gives all of it; `--pr` one PR's timeline. Compare windows before and after a playbook change to see whether it helped. See the README's "Stats".
 - **`foreman dashboard`** shows the same summary in a "Last 30 days" panel, recounted hourly in the background.
 
