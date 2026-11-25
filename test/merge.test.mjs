@@ -22,7 +22,7 @@ copyFileSync(join(ROOT, 'test/fake-gh.mjs'), join(bin, 'gh'));
 chmodSync(join(bin, 'gh'), 0o755);
 
 /** An origin with main at one commit, a clone to work in, and a PR (#7) whose branch adds `files`. */
-function setup(files = { 'app.txt': 'feature\n' }) {
+function setup(files = { 'app.txt': 'feature\n' }, { base = {} } = {}) { // base: more files on main.
 	const dir = mkdtempSync(join(tmpdir(), 'foreman-merge-'));
 	temps.push(dir);
 	const origin = join(dir, 'origin.git'), work = join(dir, 'work');
@@ -36,7 +36,7 @@ function setup(files = { 'app.txt': 'feature\n' }) {
 		return git('rev-parse', 'HEAD');
 	};
 	git('symbolic-ref', 'HEAD', 'refs/heads/main');
-	commit({ 'README.md': 'hello\n', 'baselines/a.txt': '1\n' }, 'base');
+	commit({ 'README.md': 'hello\n', 'baselines/a.txt': '1\n', ...base }, 'base');
 	git('push', '-q', 'origin', 'main');
 	git('checkout', '-q', '-b', 'feature');
 	const pr = commit(files, 'the change');
@@ -183,17 +183,31 @@ test('a required check whose name has spaces and & is looked up by its exact nam
 test('a PR that changes the shared memory merges only if its notes check out (memory PRs skip the other checks)', () => {
 	const note = (description) => `---\nname: a\n${description ? `description: ${description}\n` : ''}type: project\n---\n\nA fact.\n`;
 	const index = '# Memory\n\n## Notes\n\n- [A](a.md) — a\n';
-	const broken = setup({ 'memory/MEMORY.md': index, 'memory/a.md': note('') });
+	const memory = { base: { 'memory/MEMORY.md': index, 'memory/a.md': note('A fact') } };
+	const broken = setup({ 'memory/a.md': note('') }, memory);
 	broken.state.approved.push(broken.pr); broken.state.checksPass = false; broken.save();
 	const r = broken.merge([]);
 	assert.equal(r.merged, false, r.out);
 	assert.match(r.out, /FAIL {2}memory\/a\.md has no description/);
 	assert.match(r.out, /its shared memory notes don't check out/);
 
-	const good = setup({ 'memory/MEMORY.md': index, 'memory/a.md': note('A fact') });
+	const good = setup({ 'memory/a.md': note('A fact, edited') }, memory);
 	good.state.approved.push(good.pr); good.state.checksPass = false; good.save();
 	const ok = good.merge([]);
 	assert.equal(ok.merged, true, ok.out);
 	assert.match(ok.out, /The PR's memory\/ checks out \(1 note\)/);
 	assert.match(ok.out, /only changes documentation: not waiting for checks/);
+
+	// The setting comes from the base: a PR switching the memory off can't skip the check.
+	const off = setup({ 'memory/a.md': note(''), 'foreman.config.json': '{"memory":{"dir":""}}\n' }, { base: { ...memory.base, 'foreman.config.json': '{}\n' } });
+	off.state.approved.push(off.pr); off.state.verify[off.pr] = 'success'; off.save();
+	assert.match(off.merge([]).out, /its shared memory notes don't check out/);
+});
+
+test('no memory set up on the base (a code folder called memory/): merge doesn\'t check it', () => {
+	const t = setup({ 'memory/cache.js': 'export const x = 1;\n' }, { base: { 'memory/old.js': '1\n' } });
+	t.state.approved.push(t.pr); t.state.verify[t.pr] = 'success'; t.save();
+	const r = t.merge([]);
+	assert.equal(r.merged, true, r.out);
+	assert.doesNotMatch(r.out, /memory/i);
 });

@@ -224,6 +224,10 @@ test('memory import copies a Claude Code memory folder: converts metadata.type, 
 	assert.match(r.out, /skipped already-here: memory\/already-here\.md already exists/);
 	assert.match(r.out, /skipped deploy-notes: memory\/deploy-notes\.md already exists/);
 	assert.match(r.out, /skipped no-type: it has no type/);
+	// A note called memory would be the index on a case-insensitive file system: skipped, as add refuses it.
+	const clash = temp('claude-memory-');
+	write(clash, { 'memory.md': '---\nname: memory\ndescription: Would clash with the index\ntype: project\n---\n' });
+	assert.match(cli(dir, ['memory', 'import', clash]).out, /skipped memory: its file name isn't a plain slug \(or is "memory"/);
 	assert.match(r.out, /imported user-role \(user\)/);
 	assert.match(r.out, /imported multi \(reference\): its description was several lines, now one/);
 	assert.equal(parseNote(readFileSync(join(dir, 'memory/multi.md'), 'utf8')).description, 'Two lines of description', 'and it parses back as one line');
@@ -257,15 +261,18 @@ test('memorySection: the "Memory updates" section of a PR body, in each way it i
 	assert.equal(memorySection('- **Memory updates**: new: the cache\n- Verified with npm test\n'), 'new: the cache');
 	// The heading form ends at the next heading, a "Closes #N" line, a rule, or the attribution.
 	assert.equal(memorySection('## Memory updates\n- **new** a\n\nCloses #12\n'), '- **new** a');
-	assert.equal(memorySection('## Memory updates\n- **new** a\nFixes #3, and more\n'), '- **new** a');
+	assert.equal(memorySection('## Memory updates\n- **new** a\nFixes #3.\n'), '- **new** a');
+	assert.equal(memorySection('## Memory updates\n- **new** a\n- Fixes #12 showed the cache must be warm\n'), '- **new** a\n- Fixes #12 showed the cache must be warm', 'a sentence starting with Fixes #12 is part of it');
+	assert.equal(memorySection('- **Memory updates**:\n  - **new** a\n  ---\n  - **new** b\n- **Plan updates**: x\n'), '  - **new** a\n  ---\n  - **new** b', 'a rule doesn\'t end the item form');
 	assert.equal(memorySection('## Memory updates\n- **new** a\n\n---\nfooter\n'), '- **new** a');
 	assert.equal(memorySection('**Memory updates**\n\n- new: one\n- new: two\n\n🤖 Generated with Claude Code\n'), '- new: one\n- new: two');
 	// Bold titles with _ or * in them end a section like any other.
 	assert.equal(memorySection('- **Memory updates**: new: the cache\n- **Plan updates for my_db**: done\n'), 'new: the cache');
 	assert.equal(memorySection('**Memory updates**\n- new: the cache\n\n**Plan updates for my_db**\n- done\n'), '- new: the cache');
 	assert.equal(memorySection('### Memory Updates:\nnew: the cache\n---\nfooter'), 'new: the cache');
-	for (const none of ['## Memory updates\nNo memory updates.\n', '## Memory updates\n- None: nothing durable.\n', '- **Memory updates**: Nothing this time\n', '## Memory updates\nnone\n', '- **Memory updates**: None.\n', '## Memory updates\n\n_n/a_\n', '## Memory updates\n\n## Plan updates\nx', 'No section here.', 'Memory updates go in the PR description.', '']) assert.equal(memorySection(none), '', JSON.stringify(none));
-	assert.equal(memorySection('## Memory updates\nNo memory updates here, but a long sentence that says something worth keeping after all.\n').length > 0, true, 'only a short "no …" counts as none');
+	for (const none of ['## Memory updates\nNo memory updates.\n', '## Memory updates\n- None: nothing durable.\n', '- **Memory updates**: None this time\n', '## Memory updates\nNo updates.\n', '## Memory updates\nnothing\n', '## Memory updates\nnone\n', '- **Memory updates**: None.\n', '## Memory updates\n\n_n/a_\n', '## Memory updates\n\n## Plan updates\nx', 'No section here.', 'Memory updates go in the PR description.', '']) assert.equal(memorySection(none), '', JSON.stringify(none));
+	for (const kept of ['## Memory updates\nNo longer true: deploys no longer need a warm cache.\n', '## Memory updates\nNothing changed in deploys, but ports start at 56000 now.\n', '## Memory updates\nNo memory updates here, but a long sentence that says something worth keeping after all.\n'])
+		assert.notEqual(memorySection(kept), '', kept);
 	// Only the explicit marker line counts, whatever the PR changed.
 	assert.deepEqual([...appliedIn('Memory PR: applies memory updates from #12, #40 and #7.\n- **Memory PR:** applies memory updates from #3\n')], [12, 40, 7, 3]);
 	assert.deepEqual([...appliedIn('Applies memory updates from #5\n')], [], 'without "Memory PR:" it proves nothing');
@@ -311,7 +318,7 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	assert.match(r.out, /Memory PR: applies memory updates from #2, #5, #7/);
 	assert.match(r.out, /Review, approve and merge it like any other/);
 	assert.doesNotMatch(r.out, /warn/);
-	assert.match(JSON.parse(readFileSync(stateFile, 'utf8')).calls.at(-1), /--state merged --base main --limit 200 .*--search merged:>=2026-02-28/);
+	assert.match(JSON.parse(readFileSync(stateFile, 'utf8')).calls.at(-1), /--state merged --base main --limit 1000 .*--search merged:>=2026-02-28/);
 
 	const since = cli(dir, ['memory', 'updates', '--since', '2026-03-04T12:00:00Z'], env);
 	assert.match(since.out, /PR #5 /);
@@ -321,8 +328,8 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	assert.match(cli(dir, ['memory', 'updates', '--since', head], env).out, /No memory updates to apply: 1 PR merged into main since [0-9a-f]+ \(2026-03-10 00:00 UTC\), none with "Memory updates" still to apply \(1 PR already applied\)\./);
 
 	// GitHub gave as many as foreman asks for: say older ones weren't looked at.
-	writeFileSync(stateFile, JSON.stringify({ repo: 'o/r', pr: {}, mergedPrs: Array.from({ length: 200 }, (_, k) => pr(100 + k, '2026-03-20T00:00:00Z', 'no section')) }));
-	assert.match(cli(dir, ['memory', 'updates'], env).out, /warn {2}GitHub returned 200 merged PRs, the most foreman asks for/);
+	writeFileSync(stateFile, JSON.stringify({ repo: 'o/r', pr: {}, mergedPrs: Array.from({ length: 1000 }, (_, k) => pr(100 + k, '2026-03-20T00:00:00Z', 'no section')) }));
+	assert.match(cli(dir, ['memory', 'updates'], env).out, /warn {2}GitHub returned 1000 merged PRs, the most foreman asks for/);
 
 	// No index on the base yet: every merged PR counts, and the output says so.
 	const fresh = repo();
@@ -395,7 +402,8 @@ test('init creates the memory index once, never replaces it, and leaves a folder
 	cli(dir, ['init', '--force']);
 	assert.match(readFileSync(join(dir, 'memory/MEMORY.md'), 'utf8'), /\[Kept\]/, '--force never replaces the memory');
 
-	for (const files of [{ 'memory/allocator.c': 'int main;\n' }, { 'memory/guide.md': '# A guide\n\nOrdinary docs.\n', 'memory/n.md': note('n', 'A note') }]) {
+	for (const files of [{ 'memory/allocator.c': 'int main;\n' }, { 'memory/guide.md': '# A guide\n\nOrdinary docs.\n', 'memory/n.md': note('n', 'A note') },
+		{ 'memory/doc.md': '---\nname: doc\ntitle: Front matter, but not a note\n---\n' }, { 'memory/wrong.md': note('other-name', 'Its name differs') }]) {
 		const clash = repo();
 		write(clash, files);
 		const out = cli(clash, ['init']).out;

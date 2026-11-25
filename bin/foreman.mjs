@@ -26,8 +26,8 @@ Shared memory (durable facts every agent reads, in memory/; only the Coordinator
                                           if not); warns about broken [[links]], near-duplicates, repo paths
                                           that no longer exist and notes not updated in 180 days
   memory updates [--since <date|sha>]     the "Memory updates" sections of merged PRs that no memory PR has
-                                          applied yet ("Applies memory updates from #12, #40" in its
-                                          description), for the Coordinator to apply
+                                          applied yet ("Memory PR: applies memory updates from #12, #40"
+                                          in its description), for the Coordinator to apply
   memory add <slug> --description "<one line>" [--type project|decision|reference|feedback|user]
              [--title <index title>] [--source "PR #12"]
                                           a new note and its index line

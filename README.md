@@ -256,7 +256,7 @@ where the cache was already warm. See [[deploy-steps]].
 - Builders never edit `memory/`. Their PR has a "Memory updates" section instead: new facts, corrections to a note (by its name), notes to delete, or "none".
 - Once the memory is set up (its index is there), the folder is always a risky path, so `foreman status` marks any PR touching it RISKY and it gets the stricter review; before that, a PR adding the index is. The Coordinator turns away a Builder's PR that changes it and asks for a "Memory updates" section instead. `foreman merge` doesn't check who changed it.
 - After merges, the Coordinator runs `foreman memory updates`. It prints the sections of merged PRs that no memory PR has applied yet. The Coordinator applies them in its own small memory PR (a branch like `foreman/memory-<date>`; it can be the same PR as the plan updates), whose description says which PRs it handled: "Memory PR: applies memory updates from #12, #40". That line takes them off the list whatever the PR changed, so declining them all only needs the line in some small Coordinator PR (or `foreman memory updates --since <date>` to look past them). A note's `source: "PR #12"` on the base counts too. So a PR that merged while the memory PR was open isn't lost. The window starts when `memory/MEMORY.md` was added to the base (by commit history, not clocks), or at `--since`.
-- The memory PR goes through the usual review, approval and merge. It only changes Markdown, so `foreman merge` won't wait for CI on it, but it runs `foreman memory check` (errors only, locally, on the PR's own notes) on any PR that changes the memory folder, and refuses if a note is broken. The CI check `init --ci` writes runs it too.
+- The memory PR goes through the usual review, approval and merge. It only changes Markdown, so `foreman merge` won't wait for CI on it, but once the memory is set up on the base it runs `foreman memory check` (errors only, locally, on the PR's own notes) on any PR that changes the memory folder, and refuses if a note is broken. The folder comes from the base's `foreman.config.json`, so a PR can't switch the check off. The CI check `init --ci` writes runs it too.
 - `foreman status` shows how many notes there are, and any errors.
 
 **The memory review.** A wrong note is worse than none: every agent trusts it. At the end of each wave, and at least weekly, the Coordinator reads every note (`foreman memory list`, then the files), looking for:
@@ -341,7 +341,7 @@ It's **read-only** on purpose: approving means reviewing, which is the Coordinat
 1. **Approval is bound to a commit.** `approve` writes a commit status on the reviewed sha, and only if the PR is still at that sha. Anything pushed later is unapproved.
 2. **A clean rebase keeps the approval.** `merge --rebased-from <approved sha>` replays the approved commit onto the current base (`git merge-tree`). It accepts the PR only if that gives exactly the PR's files. Then it copies the approval onto the new head. A rebase that needed conflict fixes, or slipped in a change, goes back for review.
 3. **Up to date and green.** The PR must contain the current base. The required check must have actually passed: on the head, or on the approved commit for a clean rebase, unless a `staleCheckPaths` path changed since. No check may have failed on the head.
-4. **Memory notes that parse.** A PR that changes the [shared memory](#shared-memory) folder merges only if `foreman memory check` finds no errors in its notes (docs-only or not). Who may change it is left to review.
+4. **Memory notes that parse.** Once the [shared memory](#shared-memory) is set up on the base, a PR that changes its folder merges only if `foreman memory check` finds no errors in the PR's notes (docs-only or not). The folder comes from the base's config. Who may change it is left to review.
 5. **One at a time.** A lock shared by every worktree on the machine serializes merges.
 6. **No way around it.**
    - The guard hook reads each shell command the way bash would. That includes quoting, heredocs, `$(...)`, `bash -c`, `eval`, `xargs`, `env`, `cd` and branch switches.
@@ -357,7 +357,7 @@ flowchart TD
     open -- no --> r1["Refuse"]
     open -- yes --> uptodate{"Contains the<br/>current main?"}
     uptodate -- no --> r2["Refuse: rebase and retry"]
-    uptodate -- yes --> notes{"Changes the memory folder?<br/>Then do its notes pass<br/>foreman memory check?"}
+    uptodate -- yes --> notes{"Changes the memory folder<br/>(as set up on main)? Then do<br/>its notes pass memory check?"}
     notes -- "notes broken" --> r7["Refuse: fix the notes"]
     notes -- "no memory change,<br/>or they pass" --> head{"Approved at<br/>the head?"}
     head -- yes --> trusthead["Trust the head's checks"]
