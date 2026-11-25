@@ -146,7 +146,9 @@ test('guard --self-test: passes once init has run, fails when the pre-push check
 	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
 	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
 	assert.match(cli(dir, 'guard', '--self-test'), /8\/8 passed/);
-	writeFileSync(join(dir, '.githooks/pre-push'), '#!/usr/bin/env bash\nexit 0\n');
+	// A hook that lets everything through. It reads its input like a real one: one that exits before the self-test
+	// has written it can make that write fail (EPIPE), which the self-test would take for a refusal.
+	writeFileSync(join(dir, '.githooks/pre-push'), '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n');
 	assert.throws(() => cli(dir, 'guard', '--self-test'), (e) => /FAIL {2}pre-push refuses main/.test(e.stdout));
 });
 

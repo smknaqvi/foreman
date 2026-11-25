@@ -133,6 +133,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `merge <PR> [--rebased-from <sha>]` | The only way in. See [How the gate works](#how-the-gate-works) |
 | `observe [--once]` | One line per event: PR opened or closed, checks finished, a preview deployment ready, base CI failed, Docker memory high. Meant to run in the background while the Coordinator works (Claude Code: the Monitor tool). Also sends [notifications](#notifications) |
 | `dashboard [--port <p>] [--open]` | The crew in a browser, live: what `status` shows plus a feed of what `observe` would print. See [Dashboard](#dashboard) |
+| `stats [--since <date\|Nd>] [--until <date>] [--json] [--pr <N>]` | How the crew is doing, counted from GitHub's history (the last 30 days by default): review rounds, time from claim to merge, check failures and flakes, merges that turned the base red. `--pr`: one PR's timeline. See [Stats](#stats) |
 | `tick [--dry-run]` | The steps that need no judgement: rebase approved, green PRs onto the base (clean rebases only) and merge them through `merge`; remove orphaned environments. Never reviews or approves |
 | `memory list` / `memory check` | The shared memory's notes, one line each; whether they're all well-formed and listed once in the index (exit 1 if not), and what looks stale. See [Shared memory](#shared-memory) |
 | `memory updates [--since <date\|sha>]` | The "Memory updates" sections of merged PRs that no memory PR has applied yet, for the Coordinator to apply. Looks back to when the index was added, or to `--since` |
@@ -332,9 +333,41 @@ One page with:
 - each Builder's issue and PR (checks, approval, ready to merge, risky files, preview link),
 - other open PRs and recent merges,
 - the base branch's CI, the agents and watchdog, and local environments (orphans marked),
+- the last 30 days in numbers (the [Stats](#stats) summary, recounted hourly in the background),
 - a live feed of what `foreman observe` would print, plus the watchdog's rounds.
 
 It's **read-only** on purpose: approving means reviewing, which is the Coordinator's job, so nothing on the page approves, merges, claims or starts anything. It listens on 127.0.0.1 only and refuses requests whose `Host` isn't this machine. Its observer state lives in memory, so it doesn't change what the Coordinator's `foreman observe` reports, and the watchdog doesn't take it for a Coordinator watching.
+
+## Stats
+
+```sh
+npx --no-install foreman stats                        # PRs merged into the base in the last 30 days
+npx --no-install foreman stats --since 2026-10-01     # or --since 14d; --until <date> ends the window
+npx --no-install foreman stats --pr 42                # one PR's timeline: claim, pushes, checks, approvals, merge
+npx --no-install foreman stats --json                 # everything below, for a dashboard or a spreadsheet
+```
+
+Numbers from GitHub's history, with no AI and nothing written: the PRs merged into `baseBranch` in the window, their commits, commit statuses and check runs, the claimed issues they close, and the base branch's own commits. It prints a short summary, one row per PR, then what's worth a look. Use it to see how the crew is doing, and whether a change to a playbook helped: run it over the weeks before the change and the weeks after (`--since`/`--until`) and compare.
+
+**What each number means**
+- **Review rounds**: how many of the PR's commits got a fresh approval (`approvalContext` set to success by `foreman approve`). One review, one approval: 1 round. Approvals `foreman merge` carried over a clean rebase (the status description "Approval carried over") are counted separately, as **carried over**, so rebasing doesn't look like reviewing. 0 rounds means it merged without ever being approved.
+- **Pushes**: commits that became the PR's head after it was opened. A head is a commit CI ran for or that was approved, the PR's last commit, or either side of a force-push (a rebase or an amend). Commits pushed together count once. A lower bound: GitHub forgets commits a force-push replaced, except the one just before it.
+- **Time**: claim → opened → first approval → merged, each a duration. The claim is the issue the PR closes getting `labels.working`, or `foreman claim`'s comment: the nearest one before the PR opened (an issue claimed again restarts the clock). The summary gives medians and the three slowest PRs; "first approval → merged" is mostly the wait for a rebase and the checks.
+- **Checks**: finished runs of `requiredCheck` (every check, if it's empty) on any of the PR's commits, counting re-runs; how many failed (failure or timed out; cancelled runs aren't counted); and **flakes**: a run that failed and then passed on a re-run (the same check in the same check suite, so the same event, on the same commit, with no new push). A pull_request run failing and a push run passing aren't a flake. **Flake rate** is flakes ÷ runs. **A run takes** is the median run's duration.
+- **Turned the base red**: `requiredCheck` failed on the merge commit (its latest run), and passed on the nearest earlier base commit whose check finished (cancelled or missing runs are skipped, up to 100 commits back). If that commit failed, the merge **landed on a base that was already red**, reported separately; if none finished, it can't be told and isn't counted. Merges whose own base run was cancelled (usually by the next merge's) count neither way. **Reverts** are base commits whose first line starts with "Revert"; the reverted PR is marked when it's in the window.
+- **Waited on people**: the PR or its issue had `labels.needsInput` or `labels.decision` at some point.
+- **Merged without an approval on the last commit**: `foreman merge` leaves no other trace (it merges with `gh pr merge`), but it never merges a head without an approval, so these didn't go through it. The JSON also gives who merged each PR.
+- **Now** (whatever the window): open PRs older than 7 days, and claimed issues with no open PR for over 2 days (Builders that stopped, or work that stalled).
+
+**How to read it**
+- **Many review rounds on one PR** usually means the change kept growing during review: consider splitting such work into smaller issues, or simplifying it. A rising median after a playbook change is worth a look.
+- **Many failed check runs on one PR** (not flakes): the Builder pushed before the checks passed locally, or the work was on the checks themselves.
+- **Flakes** are a test or check that fails on its own: fix the test, don't re-run it until it passes.
+- **Turned the base red** should be rare: each one is a merge whose checks passed on the PR but failed on the base (a stale approval's checks, or a check that depends on the branch).
+- **A long claim → opened** means Builders take long to get to a first PR; a long **opened → first approval**, that reviews wait.
+- **Commits without a PR** (in "worth a look") reached the base some other way.
+
+It reads through `gh` with a few GraphQL queries: PR timelines with commit ids only, then each commit once, with every list (check suites, runs, attempts) paged to its end so nothing is cut off. A window of about 70 PRs takes about 20 queries (about 40 of GitHub's 5,000 hourly points) and 10–15 seconds, so it counts against your GitHub API limit only lightly. GitHub's search returns at most 1000 PRs per window; it warns if there are more.
 
 ## How the gate works
 
@@ -419,5 +452,5 @@ foreman runs on itself. `main` is protected: pull requests only, and all four te
 
 ```sh
 npm test    # the guard's command cases, the merge gate against real git repos and a fake gh, init, config, adapters,
-            # notifications, observe rounds, the dashboard and the shared memory
+            # notifications, observe rounds, the dashboard, the shared memory and stats
 ```
