@@ -40,7 +40,6 @@ jobs:
         run: npx --no-install foreman env remove
 
       - run: __VERIFY__
-      __MEMORY_CHECK__
 
       - name: Remove this job's environment
         if: always()

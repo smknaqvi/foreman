@@ -128,7 +128,13 @@ async function main() {
 		}
 		case 'memory': {
 			const { values, positionals } = flags({ since: { type: 'string' }, description: { type: 'string' }, type: { type: 'string' }, title: { type: 'string' }, source: { type: 'string' }, only: { type: 'string' }, 'pr-head': { type: 'string' }, base: { type: 'string' } });
-			return (await import('../lib/memory.mjs')).command(loadConfig(), positionals, values);
+			let config;
+			try { config = loadConfig(); } catch (e) {
+				if (!values['pr-head']) throw e;
+				process.stderr.write(`couldn't run the memory check: ${e.message}\n`); // For foreman merge: not the notes' fault.
+				return 2;
+			}
+			return (await import('../lib/memory.mjs')).command(config, positionals, values);
 		}
 		case 'dashboard': {
 			const { values } = flags({ port: { type: 'string' }, open: { type: 'boolean' } });

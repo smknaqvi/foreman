@@ -189,6 +189,7 @@ test('a PR that changes the shared memory merges only if its notes check out (me
 	const r = broken.merge([]);
 	assert.equal(r.merged, false, r.out);
 	assert.match(r.out, /FAIL {2}memory\/a\.md has no description/);
+	assert.doesNotMatch(r.out, /couldn't run/);
 	assert.match(r.out, /its shared memory notes don't check out/);
 
 	const good = setup({ 'memory/a.md': note('A fact, edited') }, memory);
@@ -210,4 +211,21 @@ test('no memory set up on the base (a code folder called memory/): merge doesn\'
 	const r = t.merge([]);
 	assert.equal(r.merged, true, r.out);
 	assert.doesNotMatch(r.out, /memory/i);
+});
+
+test('the memory check runs from a subfolder without a config, and a check that can\'t run refuses as such', () => {
+	const note = (description) => `---\nname: a\n${description ? `description: ${description}\n` : ''}type: project\n---\n`;
+	const memory = { base: { 'memory/MEMORY.md': '# Memory\n\n- [A](a.md) — a\n', 'memory/a.md': note('A fact'), 'sub/x.txt': '1\n' } };
+	const sub = setup({ 'memory/a.md': note('') }, memory);
+	sub.state.approved.push(sub.pr); sub.save();
+	const r = sub.merge([], {}, 'sub');
+	assert.equal(r.merged, false, r.out);
+	assert.match(r.out, /its shared memory notes don't check out/);
+
+	const broken = setup({ 'memory/a.md': note('Edited'), 'foreman.config.json': '{ not json' }, memory);
+	broken.state.approved.push(broken.pr); broken.state.verify[broken.pr] = 'success'; broken.save();
+	const out = broken.merge([]).out;
+	assert.match(out, /couldn't run the memory check: .*isn't valid JSON/);
+	assert.match(out, /couldn't run the memory check \(above\), so not merging/);
+	assert.doesNotMatch(out, /don't check out/);
 });

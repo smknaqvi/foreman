@@ -62,7 +62,14 @@ fi
 # are skipped for them and CI's `foreman memory check` never gates them. Local and fast (no GitHub). Before
 # the approval is copied anywhere, so a refusal leaves nothing behind.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-node "$here/../bin/foreman.mjs" memory check --pr-head "$head" --base "origin/$base" || { echo "PR #$pr: its shared memory notes don't check out (above). Fix them and push." >&2; exit 1; }
+rc=0; node "$here/../bin/foreman.mjs" memory check --pr-head "$head" --base "origin/$base" || rc=$?
+if [ "$rc" = 1 ]; then
+	echo "PR #$pr: its shared memory notes don't check out (above). Fix them and push." >&2
+	exit 1
+elif [ "$rc" != 0 ]; then # 2: the check itself couldn't run (it said why). Never merge unchecked.
+	echo "PR #$pr: couldn't run the memory check (above), so not merging." >&2
+	exit 1
+fi
 
 checked="$head" # The commit whose checks must be green.
 # 2. Approval of this exact change (the base is now an ancestor of head, so replaying onto it is exact).

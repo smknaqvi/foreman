@@ -270,7 +270,7 @@ test('memorySection: the "Memory updates" section of a PR body, in each way it i
 	assert.equal(memorySection('- **Memory updates**: new: the cache\n- **Plan updates for my_db**: done\n'), 'new: the cache');
 	assert.equal(memorySection('**Memory updates**\n- new: the cache\n\n**Plan updates for my_db**\n- done\n'), '- new: the cache');
 	assert.equal(memorySection('### Memory Updates:\nnew: the cache\n---\nfooter'), 'new: the cache');
-	for (const none of ['## Memory updates\nNo memory updates.\n', '## Memory updates\n- None: nothing durable.\n', '- **Memory updates**: None this time\n', '## Memory updates\nNo updates.\n', '## Memory updates\nnothing\n', '## Memory updates\nnone\n', '- **Memory updates**: None.\n', '## Memory updates\n\n_n/a_\n', '## Memory updates\n\n## Plan updates\nx', 'No section here.', 'Memory updates go in the PR description.', '']) assert.equal(memorySection(none), '', JSON.stringify(none));
+	for (const none of ['## Memory updates\nNo memory updates.\n', '## Memory updates\n- None: nothing durable.\n', '- **Memory updates**: None this time\n', '## Memory updates\nNo updates.\n', '## Memory updates\nnothing\n', '## Memory updates\nNone needed.\n', '## Memory updates\n- Nothing new\n', '## Memory updates\nNo new facts.\n', '## Memory updates\nNo changes\n', '## Memory updates\nnone\n', '- **Memory updates**: None.\n', '## Memory updates\n\n_n/a_\n', '## Memory updates\n\n## Plan updates\nx', 'No section here.', 'Memory updates go in the PR description.', '']) assert.equal(memorySection(none), '', JSON.stringify(none));
 	for (const kept of ['## Memory updates\nNo longer true: deploys no longer need a warm cache.\n', '## Memory updates\nNothing changed in deploys, but ports start at 56000 now.\n', '## Memory updates\nNo memory updates here, but a long sentence that says something worth keeping after all.\n'])
 		assert.notEqual(memorySection(kept), '', kept);
 	// Only the explicit marker line counts, whatever the PR changed.
@@ -286,7 +286,7 @@ test('memory updates: merged PRs\' sections no memory PR has applied yet, oldest
 	commit({ 'memory/MEMORY.md': index('a'), 'memory/a.md': note('a', 'A') }, '2026-03-01T12:00:00Z'); // The index is added.
 	// A later memory PR (not where counting starts), with a note whose source is PR #6: applied.
 	// (A source naming an issue, "issue #2", isn't a PR: PR #2 still shows.)
-	commit({ 'memory/a.md': note('a', 'A, again'), 'memory/c.md': note('c', 'C', 'project', 'source: "PR #6"\n'), 'memory/d.md': note('d', 'D', 'project', 'source: "issue #2"\n') }, '2026-03-10T00:00:00Z');
+	commit({ 'memory/a.md': note('a', 'A, again'), 'memory/c.md': note('c', 'C', 'project', 'source: "PR #6"\n'), 'memory/d.md': note('d', 'D', 'project', 'source: "issue #2"\n', 'source: PR #2 (in the body, not the frontmatter)') }, '2026-03-10T00:00:00Z');
 	// A note naming PR #7 on the Coordinator's branch, not merged yet: doesn't count until it's on the base.
 	write(dir, { 'memory/b.md': note('b', 'B', 'project', 'source: "PR #7"\n') });
 
@@ -362,8 +362,17 @@ test('config: memory is on by default and validated; its folder is always risky 
 	const c = loadConfig(dir);
 	assert.deepEqual(c.memory, { dir: 'memory' });
 	assert.ok(c.riskyPaths.includes('memory/MEMORY.md') && !c.riskyPaths.includes('memory/'), 'not set up: only a PR adding the index is risky');
+	// Set up on origin/<base> but not in this checkout (a branch from before it was): risky all the same.
+	const git = (...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' }).trim();
+	git('commit', '-q', '--allow-empty', '-m', 'start');
 	write(dir, { 'memory/MEMORY.md': '# Memory\n' });
-	assert.ok(loadConfig(dir).riskyPaths.includes('memory/'), 'set up: any PR touching it gets the stricter review');
+	git('add', '-A'); git('commit', '-q', '-m', 'memory');
+	git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+	git('reset', '-q', '--hard', 'HEAD~1');
+	assert.ok(!existsSync(join(dir, 'memory/MEMORY.md')));
+	assert.ok(loadConfig(dir).riskyPaths.includes('memory/'), 'set up on the base: any PR touching it gets the stricter review');
+	write(dir, { 'memory/MEMORY.md': '# Memory\n' });
+	assert.ok(loadConfig(dir).riskyPaths.includes('memory/'), 'set up here: the same');
 	writeFileSync(join(dir, 'foreman.config.json'), JSON.stringify({ memory: { dir: './docs/memory/' } }));
 	assert.equal(loadConfig(dir).memory.dir, 'docs/memory');
 	write(dir, { 'docs/memory/MEMORY.md': '# Memory\n' });
@@ -411,16 +420,6 @@ test('init creates the memory index once, never replaces it, and leaves a folder
 		assert.match(out, /memory\/ already holds files that aren't memory notes .* so it was left alone/);
 		assert.doesNotMatch(out, /Read memory\/MEMORY\.md before starting/);
 	}
-
-	// The CI check runs memory check once there's a memory; not without one.
-	const ci = repo();
-	cli(ci, ['init', '--ci']);
-	assert.match(readFileSync(join(ci, '.github/workflows/verify.yml'), 'utf8'), /- run: npm test\n {6}- run: npx --no-install foreman memory check\n/);
-	const noMemory = repo();
-	writeFileSync(join(noMemory, 'foreman.config.json'), JSON.stringify({ memory: { dir: '' } }));
-	cli(noMemory, ['init', '--ci', '--self-hosted', 'mac']);
-	const hosted = readFileSync(join(noMemory, '.github/workflows/verify.yml'), 'utf8');
-	assert.doesNotMatch(hosted, /memory check|__MEMORY_CHECK__/);
 
 	// A file called memory, or a folder called x.md inside it: not a memory folder, and no crash.
 	const file = repo();
