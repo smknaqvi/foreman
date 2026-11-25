@@ -130,7 +130,7 @@ test('stats: rounds count fresh approvals only; a carried-over approval is a reb
 	assert.deepEqual(r.summary.mergedWithoutApproval, [3]);
 });
 
-test('stats: a check that failed, then passed on the same commit with no new push, is a flake', () => {
+test('stats: a check that failed, then passed when re-run (same suite, same commit), is a flake', () => {
 	const r = json([]);
 	assert.deepEqual(r.prs[0].checks, { runs: 3, failed: 1, flakes: 1, cancelled: 0, medianMs: 10 * 60e3, durationsMs: [10 * 60e3, 10 * 60e3, 10 * 60e3] });
 	assert.equal(r.prs[1].checks.flakes, 0);
@@ -236,7 +236,7 @@ test('stats: the human summary, table and worth-a-look lines', () => {
 	assert.match(r.out, /\n {2}#1 +PR 1 +2 +2 +4\.3 h +1 +1 flake; 1 carried over\n/);
 	assert.match(r.out, /Worth a look\n {2}#2 turned main red: verify failed on the merge commit d2d2d2d\n {2}#2 was reverted \(#5\)\n {2}#3 merged without an approval/);
 	assert.match(r.out, /1 commit reached main without a PR: e8e8e8e "Hotfix straight on main"/);
-	assert.match(r.out, / {2}#1: verify failed, then passed on the same commit with no new push/);
+	assert.match(r.out, / {2}#1: verify failed, then passed when re-run on the same commit/);
 });
 
 test('stats: an empty window says so, and --json still has the whole shape', () => {
