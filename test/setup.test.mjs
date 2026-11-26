@@ -145,7 +145,7 @@ test('guard --self-test: passes once init has run, fails when the pre-push check
 	// The hook loads foreman from the repo's node_modules: link this checkout in (a linked install skips the lockfile check).
 	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
 	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
-	assert.match(cli(dir, 'guard', '--self-test'), /8\/8 passed/);
+	assert.match(cli(dir, 'guard', '--self-test'), /10\/10 passed/);
 	// A hook that lets everything through. It reads its input like a real one: one that exits before the self-test
 	// has written it can make that write fail (EPIPE), which the self-test would take for a refusal.
 	writeFileSync(join(dir, '.githooks/pre-push'), '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n');
@@ -176,7 +176,7 @@ test('init --agents wires the guard into each tool\'s own hook settings, once', 
 	mkdirSync(join(dir, 'node_modules/@smknaqvi'), { recursive: true });
 	symlinkSync(ROOT, join(dir, 'node_modules/@smknaqvi/foreman'));
 	const out = cli(dir, 'guard', '--self-test');
-	assert.match(out, /23\/23 passed/);
+	assert.match(out, /31\/31 passed/);
 	assert.match(out, /Cursor: blocks gh pr merge/);
 });
 

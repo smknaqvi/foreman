@@ -5,7 +5,7 @@ Run a crew of coding agents on one GitHub repo, in parallel, without anyone merg
 - A **Coordinator** (an agent session: Claude Code, Codex, Cursor, Antigravity, Gemini CLI or another) picks issues, launches one **Builder** per issue in its own worktree and environment, reviews each PR and approves the exact commit it reviewed.
 - Each **Builder** takes its issue to a PR, waits for approval, then merges it through `foreman merge`. That command refuses anything that isn't exactly what was approved, up to date and green.
 - An **Observer** prints a line whenever something needs the Coordinator's attention.
-- **Guards** make the gated path the only path: a hook in each agent tool (Claude Code, Codex, Cursor, Antigravity, Gemini CLI) blocks `gh pr merge`, merge API calls, writes to the base branch and hand-written approvals, and git's pre-push check refuses pushes to the base branch from any tool.
+- **Guards** make the gated path the only path: a hook in each agent tool (Claude Code, Codex, Cursor, Antigravity, Gemini CLI) blocks `gh pr merge`, merge API calls, writes to the base branch, hand-written approvals and an agent giving a person's OK to merge (`ownerOk`), and git's pre-push check refuses pushes to the base branch from any tool.
 - **Shared memory** in the repo: durable facts every agent reads before working (gotchas, decisions and their reasons, where things live, what the team prefers), in Claude Code's memory format, so every tool on every machine sees the same ones. Only the Coordinator changes it, from what Builders propose in their PRs, and it reviews the notes for contradictions and facts that have gone stale.
 - A **Watchdog** (optional, no AI) notices when every agent has stopped at a usage limit, merges what's approved and green, and starts a new Coordinator once the limit resets.
 - **Notifications** (optional) reach you on Slack, Discord or your phone when something needs a person: an issue labeled for a decision, a red base branch, a usage-limit stop, a Coordinator that finished.
@@ -159,6 +159,7 @@ Installing it as a package rather than copying scripts matters: a Builder can't 
 | `requiredCheck` | The CI check `merge` waits for (`verify`). A clean rebase reuses the approved commit's result. Empty: wait for every check on the head |
 | `approvalContext` | The commit status that records approval (`coordinator-review`) |
 | `labels` | `working`, `needsInput`, `decision` |
+| `ownerOk` | A person's OK to merge, which agents never give: `phrase`, the comment that says just that (`OK to merge`), and `label`, the label only a person removes (`needs owner review`). The merge guard refuses an agent posting the phrase as a comment or review, or removing, deleting or renaming the label (`gh`, `gh api`, GraphQL). Empty switches that part off |
 | `launchComment` | First words of the comment `claim` writes and `status` reads (`Builder launched`) |
 | `planFile` | Where progress is written down. Builders put "Plan updates" in their PRs instead, and the Coordinator applies them |
 | `verifyCommand` | What a Builder runs before saying it's done |
