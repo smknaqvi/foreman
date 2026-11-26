@@ -147,8 +147,47 @@ const blocked = [
 	['gh api repos/o/r/statuses/abc -fstate=success -fcontext=coordinator-review'], // Attached short-flag values.
 	['gh api repos/o/r/statuses/abc -f state=success -f context="$(echo coordinator-review)"'],
 	['gh api repos/o/r/statuses/abc -f state=success -f context="$CTX"'],
+	// A person's OK to merge, given by an agent (ownerOk: "OK to merge", "needs owner review").
+	['gh pr comment 5 --body "OK to merge"'],
+	['gh pr comment 5 -b "ok to merge."'],
+	['gh pr comment 5 --body=\'OK  to merge!\''],
+	['gh issue comment 5 --body "OK to merge"'],
+	["gh pr comment 5 --body-file - <<'EOF'\nOK to merge\nEOF"],
+	['gh pr comment 5 -F - <<< "OK to merge"'],
+	['gh pr review 5 --comment -b "OK to merge"'],
+	['gh pr edit 5 --remove-label "needs owner review"'],
+	['gh pr edit 5 --remove-label bug,"Needs Owner Review"'],
+	['gh pr edit 5 --remove-label="needs owner review"'],
+	['gh pr edit 5 --remove-label "$L"'], // A label the guard can't read could be that one.
+	['gh issue edit 5 --remove-label "needs owner review"'],
+	['gh label delete "needs owner review" --yes'],
+	['gh label edit "needs owner review" --name done'],
+	['gh api repos/o/r/issues/5/comments -f body="OK to merge"'],
+	["gh api repos/o/r/issues/5/comments --input - <<< '{\"body\":\"OK to merge\"}'"],
+	['gh api -X PATCH repos/o/r/issues/comments/99 -f body="OK to merge"'],
+	['gh api repos/o/r/pulls/5/reviews -f event=COMMENT -f body="OK to merge"'],
+	['gh api -X DELETE "repos/o/r/issues/5/labels/needs%20owner%20review"'],
+	['gh api -X DELETE "repos/o/r/issues/5/labels/needs owner review"'],
+	['gh api -X DELETE repos/o/r/issues/5/labels'], // Every label at once.
+	['gh api -X PUT repos/o/r/issues/5/labels -f "labels[]=bug"'], // Replacing them all without it.
+	['gh api -X DELETE "repos/o/r/labels/needs%20owner%20review"'],
+	["gh api graphql -f query='mutation { removeLabelsFromLabelable(input: {labelableId: \"x\", labelIds: [\"y\"]}) { clientMutationId } }'"],
+	["gh api graphql -f query='mutation { addComment(input: {subjectId: \"x\", body: \"OK to merge\"}) { clientMutationId } }'"],
+	["bash -c 'gh pr comment 5 --body \"OK to merge\"'"],
 ];
 const allowed = [
+	// Talking about the OK, other labels and comments are fine.
+	['gh pr comment 5 --body "Ready for your OK to merge: comment OK to merge on GitHub"'],
+	['gh pr comment 5 --body "Not OK to merge yet"'],
+	['gh pr comment 5 --body "$MSG"'], // A body the guard can't read isn't refused.
+	['gh pr edit 5 --remove-label bug --add-label "needs owner review"'],
+	['gh pr edit 5 --add-label "needs owner review"'],
+	['gh api repos/o/r/issues/5/comments -f body="Is it OK to merge?"'],
+	['gh api -X DELETE repos/o/r/issues/5/labels/bug'],
+	['gh api repos/o/r/issues/5/labels -f "labels[]=needs owner review"'], // Adding it.
+	['gh api -X PUT repos/o/r/issues/5/labels -f "labels[]=needs owner review" -f "labels[]=bug"'], // Replacing them, keeping it.
+	['gh api repos/o/r/issues/5/comments'], // Reading comments.
+	['gh label list'],
 	['npx foreman merge 123 --rebased-from 0123456789abcdef0123456789abcdef01234567'],
 	['npx --no-install foreman merge 123 --rebased-from 0123456789abcdef0123456789abcdef01234567'],
 	['npx --no-install foreman approve 123 0123456789abcdef0123456789abcdef01234567'],
@@ -222,6 +261,18 @@ test('follows the configured base branch and approval context', () => {
 	for (const c of ['git push origin main', 'git push origin trunk-fix', 'gh api repos/o/r/statuses/abc -f state=success -f context=ci/other'])
 		assert.equal(blockedReason(c, feature, opts), '', c);
 	assert.equal(blockedReason('git push', main, opts), '');
+});
+
+test('follows the configured owner OK, and can switch either part off', () => {
+	const custom = { ...OPTIONS, ownerOk: { phrase: 'Ship it', label: 'awaiting owner' } };
+	for (const c of ['gh pr comment 5 --body "ship it"', 'gh pr edit 5 --remove-label "awaiting owner"', 'gh api repos/o/r/issues/5/comments -f body="Ship it!"'])
+		assert.ok(blockedReason(c, feature, custom), c);
+	for (const c of ['gh pr comment 5 --body "OK to merge"', 'gh pr edit 5 --remove-label "needs owner review"'])
+		assert.equal(blockedReason(c, feature, custom), '', c);
+	const off = { ...OPTIONS, ownerOk: { phrase: '', label: '' } };
+	for (const c of ['gh pr comment 5 --body "OK to merge"', 'gh pr edit 5 --remove-label "needs owner review"', 'gh api -X DELETE repos/o/r/issues/5/labels'])
+		assert.equal(blockedReason(c, feature, off), '', c);
+	assert.match(blockedReason('gh pr comment 5 --body "OK to merge"', feature, OPTIONS), /Only a person gives the OK to merge/);
 });
 
 test('reads its settings from foreman.config.json when not given any', () => {
